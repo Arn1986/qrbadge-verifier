@@ -1,15 +1,28 @@
 {
-  "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "qr-badge-verifier",
-  "main": "src/worker.js",
-  "compatibility_date": "2026-09-25",
-  "assets": {
-    "directory": "./public",
-    "binding": "ASSETS",
-    "run_worker_first": true
-  },
-  "d1_databases": [
-    { "binding": "DB", "database_name": "qr-badge-verifier", "database_id": "REPLACE_WITH_D1_DATABASE_ID" }
-  ],
-  "triggers": { "crons": ["0 2 * * *"] }
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "qr-badge-verifier",
+	"main": "src/worker.js",
+	"compatibility_date": "2026-09-25",
+	"assets": {
+		"directory": "./public",
+		"binding": "ASSETS",
+		"run_worker_first": true
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "qr-badge-verifier",
+			"database_id": "5c1abac1-f87a-45a9-97a1-d122fcb6df74"
+		},
+		{
+			"binding": "qr_badge_verifier",
+			"database_name": "qr-badge-verifier",
+			"database_id": "5c1abac1-f87a-45a9-97a1-d122fcb6df74"
+		}
+	],
+	"triggers": {
+		"crons": [
+			"0 2 * * *"
+		]
+	}
 }
