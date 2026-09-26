@@ -1,0 +1,5 @@
+# Copy to .dev.vars and insert private, unique values; never commit .dev.vars.
+# Generate 32 random bytes as 64 hex characters for STORAGE_KEY_HEX.
+STORAGE_KEY_HEX=REPLACE_WITH_64_RANDOM_HEX_CHARACTERS
+ADMIN_BASIC_USERNAME=admin
+ADMIN_BASIC_PASSWORD=REPLACE_WITH_STRONG_PASSWORD

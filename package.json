@@ -1,0 +1,16 @@
+{
+  "name": "qr-badge-verifier",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test",
+    "dev": "npm run build && wrangler dev",
+    "deploy": "npm run build && wrangler deploy",
+    "db:local": "wrangler d1 migrations apply qr-badge-verifier --local",
+    "db:remote": "wrangler d1 migrations apply qr-badge-verifier --remote"
+  },
+  "dependencies": { "jsqr": "1.4.0" },
+  "devDependencies": { "wrangler": "^4.141.0" }
+}
