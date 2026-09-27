@@ -2,6 +2,8 @@
 
 Public online camera / paste-hex verifier for time-based-badge QR codes, plus Basic Auth protected key management and scan history. The Worker determines validity using its clock and sends UTC instants to the browser, which displays them in local time.
 
+Scan sounds are on by default and can be muted with **Play result sounds**. A valid QR plays two short ascending approval beeps. Not valid yet, expired, unreadable encrypted content, malformed hex, and unsupported QR formats play two lower denial beeps. Connection errors, rate limits, and server failures stay silent because no validity decision was made. Browsers normally require a click or tap before audio can start; starting the camera, submitting pasted hex, and turning sound on unlock the audio context.
+
 ## Requirements
 
 - Node.js 20.19 or later, npm, Cloudflare Workers and D1, GitHub repository for automatic deployment.

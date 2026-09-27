@@ -13,6 +13,7 @@ Provide a public web page that scans time-based-badge QR codes using a phone cam
 | Access to scanner | Anyone with the link; no scanner login |
 | Connectivity | Online; verification runs on the Cloudflare Worker |
 | Scan flow | One QR at a time; hold the result until the operator presses **Scan again** |
+| Scan sound | Two short ascending tones for Valid; two lower tones for nonvalid QR results; mute checkbox; no denial sound for connection or server errors |
 | Reuse | The same QR can be scanned multiple times within its valid window |
 | Results | Valid, Not valid yet, Expired, and Cannot verify; also report malformed or unsupported QR format clearly |
 | Successful decoding | Show decimal badge identifier and actual start/end date and time, even when outside the valid interval |

@@ -32,6 +32,7 @@ async function listCameras() {
   if (selectedCamera) cameras.value = selectedCamera;
 }
 async function startCamera() {
+  window.BadgeSounds.unlock();
   stopCamera(); busy = false; resultCard.hidden = true; again.hidden = true; start.hidden = true;
   if (!navigator.mediaDevices?.getUserMedia) {
     cameraStatus.textContent = 'Camera unavailable in this browser or connection. Paste the QR hex below.';
@@ -94,6 +95,7 @@ async function verify(hex, source) {
       return;
     }
     render(data);
+    window.BadgeSounds.play(data.result);
     cameraStatus.textContent = 'Result shown. Select Scan again when ready.';
   } catch (error) {
     render({ result: 'connection_error' });
@@ -103,5 +105,6 @@ async function verify(hex, source) {
 start.addEventListener('click', startCamera);
 again.addEventListener('click', startCamera);
 cameras.addEventListener('change', () => { selectedCamera = cameras.value; startCamera(); });
-document.querySelector('#paste-form').addEventListener('submit', event => { event.preventDefault(); verify(document.querySelector('#hex').value, 'paste'); });
+document.querySelector('#sound-enabled').addEventListener('change', () => window.BadgeSounds.unlock());
+document.querySelector('#paste-form').addEventListener('submit', event => { event.preventDefault(); window.BadgeSounds.unlock(); verify(document.querySelector('#hex').value, 'paste'); });
 window.addEventListener('pagehide', stopCamera);

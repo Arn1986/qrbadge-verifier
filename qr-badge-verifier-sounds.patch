@@ -1,0 +1,165 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -1,6 +1,8 @@
+ # qr-badge-verifier
+ 
+ Public online camera / paste-hex verifier for time-based-badge QR codes, plus Basic Auth protected key management and scan history. The Worker determines validity using its clock and sends UTC instants to the browser, which displays them in local time.
++
++Scan sounds are on by default and can be muted with **Play result sounds**. A valid QR plays two short ascending approval beeps. Not valid yet, expired, unreadable encrypted content, malformed hex, and unsupported QR formats play two lower denial beeps. Connection errors, rate limits, and server failures stay silent because no validity decision was made. Browsers normally require a click or tap before audio can start; starting the camera, submitting pasted hex, and turning sound on unlock the audio context.
+ 
+ ## Requirements
+ 
+diff --git a/project_plan.md b/project_plan.md
+--- a/project_plan.md
++++ b/project_plan.md
+@@ -13,6 +13,7 @@
+ | Access to scanner | Anyone with the link; no scanner login |
+ | Connectivity | Online; verification runs on the Cloudflare Worker |
+ | Scan flow | One QR at a time; hold the result until the operator presses **Scan again** |
++| Scan sound | Two short ascending tones for Valid; two lower tones for nonvalid QR results; mute checkbox; no denial sound for connection or server errors |
+ | Reuse | The same QR can be scanned multiple times within its valid window |
+ | Results | Valid, Not valid yet, Expired, and Cannot verify; also report malformed or unsupported QR format clearly |
+ | Successful decoding | Show decimal badge identifier and actual start/end date and time, even when outside the valid interval |
+diff --git a/public/index.html b/public/index.html
+--- a/public/index.html
++++ b/public/index.html
+@@ -1,6 +1,6 @@
+ <!doctype html>
+-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#12243a"><title>QR badge verifier</title><link rel="stylesheet" href="/style.css"><script src="/vendor/jsQR.js" defer></script><script src="/app.js" defer></script></head>
++<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#12243a"><title>QR badge verifier</title><link rel="stylesheet" href="/style.css"><script src="/vendor/jsQR.js" defer></script><script src="/sounds.js" defer></script><script src="/app.js" defer></script></head>
+ <body><header><div class="shell heading"><div><span class="eyebrow">BADGE VERIFICATION</span><h1>Scan a badge</h1><p>Check its encoded time window against the verifier clock.</p></div><a class="admin-link" href="/admin/">Admin</a></div></header>
+-<main class="shell"><section class="card"><div id="scanner" class="scanner"><video id="video" playsinline muted aria-label="Camera preview"></video><div class="camera-empty" id="camera-empty"><div class="scan-icon" aria-hidden="true">▣</div><p>Camera is off</p></div></div><div class="controls"><button id="start" type="button">Start camera</button><button id="again" type="button" hidden>Scan again</button><label id="camera-label" hidden>Camera <select id="cameras"></select></label></div><p class="hint" id="camera-status" role="status">Allow camera access when prompted. A secure HTTPS connection is required.</p></section>
++<main class="shell"><section class="card"><div id="scanner" class="scanner"><video id="video" playsinline muted aria-label="Camera preview"></video><div class="camera-empty" id="camera-empty"><div class="scan-icon" aria-hidden="true">▣</div><p>Camera is off</p></div></div><div class="controls"><button id="start" type="button">Start camera</button><button id="again" type="button" hidden>Scan again</button><label id="camera-label" hidden>Camera <select id="cameras"></select></label><label class="sound-choice"><input id="sound-enabled" type="checkbox" checked> Play result sounds</label></div><p class="hint" id="camera-status" role="status">Allow camera access when prompted. A secure HTTPS connection is required.</p></section>
+ <section class="card result-card" id="result-card" hidden aria-live="polite"><div class="result-banner" id="result-banner"><span class="badge-icon" aria-hidden="true">●</span><h2 id="result-title"></h2></div><p id="result-description"></p><dl id="result-details" class="details" hidden><div><dt>Badge identifier</dt><dd id="identifier"></dd></div><div><dt>Starts</dt><dd id="starts"></dd></div><div><dt>Ends</dt><dd id="ends"></dd></div><div><dt>Display time zone</dt><dd id="timezone"></dd></div></dl></section>
+ <section class="card"><h2>Paste QR hex</h2><p class="small">Use this when a camera is unavailable or for testing.</p><form id="paste-form"><label for="hex">QR payload</label><textarea id="hex" rows="3" spellcheck="false" autocomplete="off" placeholder="84 hexadecimal characters"></textarea><button type="submit">Verify pasted QR</button></form></section></main><footer class="shell">Verification requires an internet connection. The browser does not hold the AES key.</footer></body></html>
+diff --git a/public/app.js b/public/app.js
+--- a/public/app.js
++++ b/public/app.js
+@@ -32,6 +32,7 @@
+   if (selectedCamera) cameras.value = selectedCamera;
+ }
+ async function startCamera() {
++  window.BadgeSounds.unlock();
+   stopCamera(); busy = false; resultCard.hidden = true; again.hidden = true; start.hidden = true;
+   if (!navigator.mediaDevices?.getUserMedia) {
+     cameraStatus.textContent = 'Camera unavailable in this browser or connection. Paste the QR hex below.';
+@@ -94,6 +95,7 @@
+       return;
+     }
+     render(data);
++    window.BadgeSounds.play(data.result);
+     cameraStatus.textContent = 'Result shown. Select Scan again when ready.';
+   } catch (error) {
+     render({ result: 'connection_error' });
+@@ -103,5 +105,6 @@
+ start.addEventListener('click', startCamera);
+ again.addEventListener('click', startCamera);
+ cameras.addEventListener('change', () => { selectedCamera = cameras.value; startCamera(); });
+-document.querySelector('#paste-form').addEventListener('submit', event => { event.preventDefault(); verify(document.querySelector('#hex').value, 'paste'); });
++document.querySelector('#sound-enabled').addEventListener('change', () => window.BadgeSounds.unlock());
++document.querySelector('#paste-form').addEventListener('submit', event => { event.preventDefault(); window.BadgeSounds.unlock(); verify(document.querySelector('#hex').value, 'paste'); });
+ window.addEventListener('pagehide', stopCamera);
+diff --git a/public/style.css b/public/style.css
+--- a/public/style.css
++++ b/public/style.css
+@@ -1 +1,3 @@
+ :root{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#16283c;background:#f2f6f8}*{box-sizing:border-box}[hidden]{display:none!important}body{margin:0}header{background:#12243a;color:#fff;padding:32px 0 38px}.shell{width:min(100% - 32px,900px);margin:auto}.heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}.eyebrow{font-size:12px;font-weight:750;letter-spacing:.18em;color:#7dd3c6}h1{font-size:clamp(30px,5vw,46px);line-height:1.1;margin:8px 0}header p{color:#c4d3e3;margin:8px 0 0}.admin-link{color:#fff;border:1px solid #74859a;padding:9px 14px;border-radius:9px;text-decoration:none}main{padding-top:25px;padding-bottom:30px}.card{background:white;border:1px solid #dbe5ea;border-radius:16px;padding:22px;margin-bottom:18px;box-shadow:0 4px 18px #12243a09}h2{font-size:20px;margin:0 0 12px}.scanner{position:relative;min-height:240px;max-height:460px;display:grid;place-items:center;background:#132a3c;border-radius:11px;overflow:hidden}video{width:100%;max-height:460px;object-fit:contain;display:none}.camera-empty{position:absolute;text-align:center;color:#e3f0f4}.camera-empty p{margin:6px}.scan-icon{font-size:75px;color:#87dfc4}.controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:17px}button{border:0;border-radius:9px;padding:11px 17px;background:#126e62;color:#fff;font-weight:700;cursor:pointer}button:hover{background:#0b544b}button:disabled{opacity:.5;cursor:default}.danger{background:#a83239}.danger:hover{background:#84272c}label{display:block;font-weight:650;margin:12px 0 7px}select,input,textarea{border:1px solid #aebdc8;background:white;border-radius:8px;padding:10px;font:inherit;color:inherit;max-width:100%}textarea{display:block;width:100%;margin-bottom:13px;font-family:ui-monospace,monospace}input[type=password]{width:min(100%,430px);display:block}input[type=number]{width:110px}.hint,.small,footer{color:#586d7e;font-size:14px;line-height:1.5}.result-banner{padding:12px 16px;border-radius:9px;display:flex;align-items:center;gap:12px;background:#f9e9e9;color:#8b222a}.result-banner h2{margin:0}.result-banner.success{background:#dff4ea;color:#176444}.result-banner.warning{background:#fff1d4;color:#815900}.details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:13px;margin-bottom:0}.details div{background:#f5f8f9;border-radius:9px;padding:13px}.details dt{font-size:13px;color:#586d7e}.details dd{font-weight:650;margin:5px 0 0;overflow-wrap:anywhere}.inline{display:flex;align-items:end;gap:10px;flex-wrap:wrap}.inline label{margin:0}.table-scroll{overflow:auto}table{border-collapse:collapse;width:100%;font-size:14px}td,th{border-bottom:1px solid #e3ebee;text-align:left;padding:11px 10px;white-space:nowrap}th{color:#586d7e}.pagination{display:flex;align-items:center;gap:15px;margin-top:15px}.error-text{color:#a83239}.success-text{color:#126e62}footer{padding-bottom:24px}@media(max-width:600px){.details{grid-template-columns:1fr}.card{padding:16px}.heading{align-items:center}.admin-link{font-size:13px}.scanner{min-height:220px}}
++
++.sound-choice{display:inline-flex;align-items:center;gap:8px;margin:0;color:#405466;font-size:14px;font-weight:550;cursor:pointer}.sound-choice input{width:18px;height:18px;margin:0;accent-color:#126e62}
+diff --git a/public/sounds.js b/public/sounds.js
+new file mode 100644
+--- /dev/null
++++ b/public/sounds.js
+@@ -0,0 +1,43 @@
++(() => {
++  let context;
++  const Audio = window.AudioContext || window.webkitAudioContext;
++  const denied = new Set(['not_yet_valid', 'expired', 'cannot_verify', 'malformed', 'unsupported']);
++
++  function unlock() {
++    if (!Audio || !document.querySelector('#sound-enabled').checked) return;
++    try {
++      context ||= new Audio();
++      if (context.state !== 'running') context.resume().catch(() => {});
++    } catch { /* Sound is optional; the verification result remains visible. */ }
++  }
++
++  function tone(frequency, start, duration, waveform, volume) {
++    const oscillator = context.createOscillator();
++    const gain = context.createGain();
++    oscillator.type = waveform;
++    oscillator.frequency.setValueAtTime(frequency, start);
++    gain.gain.setValueAtTime(0.001, start);
++    gain.gain.linearRampToValueAtTime(volume, start + 0.018);
++    gain.gain.exponentialRampToValueAtTime(0.001, start + duration);
++    oscillator.connect(gain).connect(context.destination);
++    oscillator.start(start);
++    oscillator.stop(start + duration + 0.015);
++    oscillator.onended = () => { oscillator.disconnect(); gain.disconnect(); };
++  }
++
++  function play(result) {
++    if (!context || context.state !== 'running' || !document.querySelector('#sound-enabled').checked) return;
++    const start = context.currentTime + 0.01;
++    try {
++      if (result === 'valid') {
++        tone(740, start, 0.12, 'sine', 0.15);
++        tone(990, start + 0.14, 0.17, 'sine', 0.15);
++      } else if (denied.has(result)) {
++        tone(360, start, 0.18, 'triangle', 0.18);
++        tone(260, start + 0.20, 0.26, 'triangle', 0.18);
++      }
++    } catch { /* Audio cannot affect the displayed verification decision. */ }
++  }
++
++  window.BadgeSounds = { unlock, play };
++})();
+diff --git a/test/sounds.test.js b/test/sounds.test.js
+new file mode 100644
+--- /dev/null
++++ b/test/sounds.test.js
+@@ -0,0 +1,43 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++import { readFileSync } from 'node:fs';
++import { runInNewContext } from 'node:vm';
++
++const script = readFileSync(new URL('../public/sounds.js', import.meta.url), 'utf8');
++test('approval and denial are distinct; unknown verification outcomes stay silent', () => {
++  const played = [];
++  const checkbox = { checked: true };
++  class AudioContext {
++    state = 'suspended';
++    currentTime = 1;
++    destination = {};
++    resume() { this.state = 'running'; return Promise.resolve(); }
++    createOscillator() {
++      const note = { frequency: null, type: '' };
++      return {
++        frequency: { setValueAtTime(value) { note.frequency = value; } },
++        connect(destination) { return destination; },
++        start() { played.push(note); }, stop() {}, disconnect() {}
++      };
++    }
++    createGain() {
++      return { gain: { setValueAtTime() {}, linearRampToValueAtTime() {}, exponentialRampToValueAtTime() {} }, connect() {}, disconnect() {} };
++    }
++  }
++  const window = { AudioContext };
++  runInNewContext(script, { window, document: { querySelector: () => checkbox } });
++  window.BadgeSounds.unlock();
++  window.BadgeSounds.play('valid');
++  assert.deepEqual(played.map(note => note.frequency), [740, 990]);
++  played.length = 0;
++  for (const status of ['not_yet_valid', 'expired', 'cannot_verify', 'malformed', 'unsupported']) {
++    window.BadgeSounds.play(status);
++    assert.deepEqual(played.map(note => note.frequency), [360, 260]);
++    played.length = 0;
++  }
++  for (const status of ['connection_error', 'rate_limited', 'service_error']) window.BadgeSounds.play(status);
++  assert.equal(played.length, 0);
++  checkbox.checked = false;
++  window.BadgeSounds.play('valid');
++  assert.equal(played.length, 0);
++});
