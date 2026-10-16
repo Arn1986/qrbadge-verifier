@@ -6,7 +6,9 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "test": "node --test",
-    "dev": "npm run build && wrangler dev",
+    "lint": "node --check server.js scripts/build.mjs src/worker.js src/protocol.js",
+    "dev": "npm run build && node server.js",
+    "start": "node server.js",
     "deploy": "npm run build && wrangler deploy",
     "db:local": "wrangler d1 migrations apply qr-badge-verifier --local",
     "db:remote": "wrangler d1 migrations apply qr-badge-verifier --remote"

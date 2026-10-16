@@ -1,6 +1,382 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#12243a"><title>QR badge verifier</title><link rel="stylesheet" href="/style.css"><script src="/vendor/jsQR.js" defer></script><script src="/sounds.js" defer></script><script src="/app.js" defer></script></head>
-<body><header><div class="shell heading"><div><span class="eyebrow">BADGE VERIFICATION</span><h1>Scan a badge</h1><p>Check its encoded time window against the verifier clock.</p></div><a class="admin-link" href="/admin/">Admin</a></div></header>
-<main class="shell"><section class="card"><div id="scanner" class="scanner"><video id="video" playsinline muted aria-label="Camera preview"></video><div class="camera-empty" id="camera-empty"><div class="scan-icon" aria-hidden="true">▣</div><p>Camera is off</p></div></div><div class="controls"><button id="start" type="button">Start camera</button><button id="again" type="button" hidden>Scan again</button><label id="camera-label" hidden>Camera <select id="cameras"></select></label><label class="sound-choice"><input id="sound-enabled" type="checkbox" checked> Play result sounds</label></div><p class="hint" id="camera-status" role="status">Allow camera access when prompted. A secure HTTPS connection is required.</p></section>
-<section class="card result-card" id="result-card" hidden aria-live="polite"><div class="result-banner" id="result-banner"><span class="badge-icon" aria-hidden="true">●</span><h2 id="result-title"></h2></div><p id="result-description"></p><dl id="result-details" class="details" hidden><div><dt>Badge identifier</dt><dd id="identifier"></dd></div><div><dt>Starts</dt><dd id="starts"></dd></div><div><dt>Ends</dt><dd id="ends"></dd></div><div><dt>Display time zone</dt><dd id="timezone"></dd></div></dl></section>
-<section class="card"><h2>Paste QR hex</h2><p class="small">Use this when a camera is unavailable or for testing.</p><form id="paste-form"><label for="hex">QR payload</label><textarea id="hex" rows="3" spellcheck="false" autocomplete="off" placeholder="84 hexadecimal characters"></textarea><button type="submit">Verify pasted QR</button></form></section></main><footer class="shell">Verification requires an internet connection. The browser does not hold the AES key.</footer></body></html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#12243a">
+  <title>QR Attendance & Badge Verifier</title>
+  <meta name="description" content="QR attendance check-in, identifier lookup, group reporting, and roster management.">
+  <meta property="og:title" content="QR Attendance & Badge Verifier">
+  <meta property="og:description" content="QR attendance check-in, identifier lookup, group reporting, and roster management.">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/vendor/jsQR.js" defer></script>
+  <script src="/sounds.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header>
+    <div class="shell">
+      <div class="heading">
+        <div>
+          <span class="eyebrow">ATTENDANCE & BADGE VERIFIER</span>
+          <h1>QR Attendance</h1>
+          <p>Scan badges, verify identifiers, and track real-time group attendance.</p>
+        </div>
+        <div class="session-selector-bar">
+          <label for="session-select" style="margin:0;font-size:13px;color:#c4d3e3;">Session:</label>
+          <select id="session-select" aria-label="Active attendance session"></select>
+          <button id="btn-open-session-modal" type="button" class="btn-sm btn-outline">+ New</button>
+        </div>
+      </div>
+      <nav class="nav-tabs" role="tablist">
+        <button id="tab-btn-scanner" class="nav-tab active" type="button" role="tab" aria-selected="true" data-tab="scanner">Scanner</button>
+        <button id="tab-btn-reports" class="nav-tab" type="button" role="tab" aria-selected="false" data-tab="reports">Reports</button>
+        <button id="tab-btn-roster" class="nav-tab" type="button" role="tab" aria-selected="false" data-tab="roster">Roster</button>
+        <button id="tab-btn-settings" class="nav-tab" type="button" role="tab" aria-selected="false" data-tab="settings">Settings</button>
+      </nav>
+    </div>
+  </header>
+
+  <main class="shell">
+    <div id="toast-container"></div>
+
+    <!-- TAB 1: SCANNER VIEW -->
+    <section id="view-scanner">
+      <div class="card">
+        <div class="card-header">
+          <h2>Badge Camera Scanner</h2>
+          <label class="sound-choice">
+            <input id="sound-enabled" type="checkbox" checked>
+            Play result audio
+          </label>
+        </div>
+
+        <div id="scanner" class="scanner">
+          <video id="video" playsinline muted aria-label="Camera preview"></video>
+          <div class="camera-empty" id="camera-empty">
+            <div class="scan-icon" aria-hidden="true">▣</div>
+            <p>Camera is off</p>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button id="start" type="button">Start camera</button>
+          <button id="again" type="button" hidden>Scan again</button>
+          <label id="camera-label" hidden style="margin:0;display:inline-flex;align-items:center;gap:6px;">
+            Camera <select id="cameras"></select>
+          </label>
+        </div>
+        <p class="hint" id="camera-status" role="status">Point camera at an attendee's QR badge. Works with plain identifier numbers or encrypted badges.</p>
+      </div>
+
+      <!-- Quick Lookup / Paste Card -->
+      <div class="card">
+        <h2>Manual Lookup & Paste</h2>
+        <p class="small">Enter an attendee identifier number (e.g. <code>1234</code>, <code>104829</code>) or paste an 84-hex QR payload.</p>
+        <form id="paste-form">
+          <textarea id="hex" rows="2" spellcheck="false" autocomplete="off" placeholder="Enter identifier number (e.g. 104829) or 84-hex badge payload"></textarea>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <button type="submit">Look up attendee</button>
+            <span class="small">Sample IDs: <strong>1234</strong> (John Doe), <strong>104829</strong> (Maria Santos)</span>
+          </div>
+        </form>
+      </div>
+
+      <!-- Recent Check-ins Card -->
+      <div class="card">
+        <div class="card-header">
+          <h2>Recent Check-ins (Current Session)</h2>
+          <span id="recent-count" class="small">0 attendees checked in</span>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Attendee</th>
+                <th>Identifier</th>
+                <th>Group</th>
+                <th>Check-in Time</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="recent-table-body">
+              <tr>
+                <td colspan="5" style="text-align:center;color:#6d8496;padding:24px;">No check-ins logged yet in this session. Start scanning above!</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: REPORTS VIEW -->
+    <section id="view-reports" hidden>
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2 id="report-session-title">Attendance Overview</h2>
+            <p id="report-last-updated" class="small" style="margin:4px 0 0;">Updated just now</p>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button id="btn-refresh-report" type="button" class="btn-secondary btn-sm">Refresh</button>
+            <button id="btn-export-csv" type="button" class="btn-sm">Export CSV</button>
+          </div>
+        </div>
+
+        <!-- Metric KPI Tiles -->
+        <div class="metric-grid">
+          <div class="metric-tile">
+            <div class="metric-label">Total Enrolled</div>
+            <div class="metric-value" id="kpi-total">0</div>
+          </div>
+          <div class="metric-tile highlight">
+            <div class="metric-label">Present</div>
+            <div class="metric-value" id="kpi-present">0</div>
+          </div>
+          <div class="metric-tile">
+            <div class="metric-label">Missing</div>
+            <div class="metric-value" id="kpi-missing">0</div>
+          </div>
+          <div class="metric-tile">
+            <div class="metric-label">Attendance Rate</div>
+            <div class="metric-value" id="kpi-percent">0%</div>
+          </div>
+        </div>
+
+        <!-- Group Breakdown Cards -->
+        <h3 style="margin-top:24px;">Group Breakdown</h3>
+        <p class="small" style="margin-bottom:12px;">Click any group card to filter the roster list below.</p>
+        <div id="group-cards-container" class="group-grid">
+          <!-- Populated by JS -->
+        </div>
+
+        <!-- Filter & Search Bar -->
+        <div class="filter-bar">
+          <div class="segmented-control" role="group" aria-label="Attendance filter">
+            <button class="segmented-btn active" type="button" data-filter="all">All Attendees</button>
+            <button class="segmented-btn" type="button" data-filter="missing">Missing Only</button>
+            <button class="segmented-btn" type="button" data-filter="present">Present Only</button>
+          </div>
+
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
+            <select id="report-group-filter" aria-label="Filter by group">
+              <option value="">All Groups</option>
+            </select>
+            <input id="report-search" type="search" class="search-input" placeholder="Search name or ID...">
+          </div>
+        </div>
+
+        <!-- Group Attendees Table -->
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Attendee</th>
+                <th>Identifier</th>
+                <th>Group</th>
+                <th>Status</th>
+                <th>Check-in Time</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="report-table-body">
+              <!-- Populated by JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: ROSTER VIEW -->
+    <section id="view-roster" hidden>
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2>Attendee Directory</h2>
+            <p class="small" style="margin:4px 0 0;">Manage enrolled persons and bulk import roster data via CSV.</p>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button id="btn-open-add-person" type="button">+ Add Person</button>
+            <button id="btn-open-bulk-import" type="button" class="btn-secondary">Bulk Import (CSV)</button>
+          </div>
+        </div>
+
+        <div class="filter-bar">
+          <input id="roster-search" type="search" class="search-input" placeholder="Search by name or identifier...">
+          <select id="roster-group-filter" aria-label="Filter roster by group">
+            <option value="">All Groups</option>
+          </select>
+        </div>
+
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Identifier Number</th>
+                <th>Group</th>
+                <th style="width:100px;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="roster-table-body">
+              <!-- Populated by JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: SETTINGS VIEW -->
+    <section id="view-settings" hidden>
+      <div class="card">
+        <h2>Session Management</h2>
+        <p class="small">Create new attendance sessions (e.g. "Orientation Day 2", "Workshop Afternoon") and switch the active event.</p>
+        <div class="table-scroll" style="margin-top:14px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Session Name</th>
+                <th>Created</th>
+                <th>Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="settings-sessions-table">
+              <!-- Populated by JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Active Badge AES Key (Encrypted Mode)</h2>
+        <p id="key-status">Loading key configuration...</p>
+        <form id="key-form">
+          <label for="key">New AES-128 key (32 hex characters)</label>
+          <input id="key" type="password" inputmode="text" minlength="32" maxlength="32" pattern="[0-9a-fA-F]{32}" required autocomplete="new-password">
+          <p class="small">Replaces the active AES key used to decrypt time-based badge payloads.</p>
+          <button type="submit" class="danger">Replace active key</button>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Data Retention</h2>
+        <form id="retention-form" class="inline">
+          <label for="days">Keep scan logs for (days)</label>
+          <input id="days" type="number" min="1" max="3650" required value="30">
+          <button type="submit">Save retention</button>
+        </form>
+      </div>
+    </section>
+  </main>
+
+  <!-- MODAL: ATTENDANCE CONFIRMATION POPUP -->
+  <div id="modal-confirm" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="modal-person-name">
+    <div class="modal-content">
+      <div class="modal-header">
+        <span class="eyebrow" style="color:#126e62;margin:0;">CONFIRM ATTENDANCE</span>
+        <button id="modal-close-btn" class="modal-close" type="button" aria-label="Close dialog">×</button>
+      </div>
+
+      <div class="attendee-preview">
+        <div id="modal-avatar" class="attendee-avatar">JD</div>
+        <h2 id="modal-person-name" class="attendee-name">John Doe</h2>
+        <div class="attendee-details">
+          Identifier: <strong id="modal-person-id" class="tabular">1234</strong> · Group: <strong id="modal-person-group">Engineering</strong>
+        </div>
+        <div id="modal-badge-container">
+          <span id="modal-status-badge" class="attendee-status-badge new">Not yet checked in</span>
+        </div>
+        <p id="modal-time-info" class="small" style="margin-top:8px;"></p>
+      </div>
+
+      <div class="modal-actions">
+        <button id="modal-cancel-btn" type="button" class="btn-secondary">Close (Esc)</button>
+        <button id="modal-confirm-btn" type="button" class="btn-full" style="flex:2;">Mark Present (Enter)</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD SINGLE PERSON -->
+  <div id="modal-add-person" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="modal-add-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modal-add-title">Add Attendee</h2>
+        <button id="modal-add-close" class="modal-close" type="button" aria-label="Close dialog">×</button>
+      </div>
+      <form id="form-add-person">
+        <label for="add-first-name">First Name</label>
+        <input id="add-first-name" type="text" required placeholder="e.g. John" style="width:100%;">
+
+        <label for="add-last-name">Last Name</label>
+        <input id="add-last-name" type="text" required placeholder="e.g. Doe" style="width:100%;">
+
+        <label for="add-identifier">Identifier Number / Barcode</label>
+        <input id="add-identifier" type="text" required placeholder="e.g. 104829 or EMP-01" style="width:100%;">
+
+        <label for="add-group">Group Name</label>
+        <input id="add-group" type="text" required placeholder="e.g. Engineering, Sales, Operations" list="group-suggestions" style="width:100%;">
+        <datalist id="group-suggestions"></datalist>
+
+        <div class="modal-actions">
+          <button id="modal-add-cancel" type="button" class="btn-secondary">Cancel</button>
+          <button type="submit">Save Person</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: BULK IMPORT CSV -->
+  <div id="modal-bulk-import" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="modal-bulk-title">
+    <div class="modal-content" style="width:min(100%, 640px);">
+      <div class="modal-header">
+        <h2 id="modal-bulk-title">Bulk Import Attendees (CSV)</h2>
+        <button id="modal-bulk-close" class="modal-close" type="button" aria-label="Close dialog">×</button>
+      </div>
+      <p class="small" style="margin-top:0;">
+        Upload a <code>.csv</code> file or paste rows below. Expected format:
+        <br>
+        <code>firstName, lastName, identifierNumber, groupName</code>
+      </p>
+
+      <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap;">
+        <input id="bulk-file-input" type="file" accept=".csv,text/csv,text/plain" style="font-size:13px;">
+        <button id="btn-insert-sample-csv" type="button" class="btn-secondary btn-sm">Insert Sample CSV</button>
+      </div>
+
+      <label for="bulk-csv-text">CSV Content</label>
+      <textarea id="bulk-csv-text" rows="6" placeholder="Maria, Santos, 104829, Engineering&#10;Alex, Chen, 77881, Design&#10;Samira, Patel, 55412, Marketing"></textarea>
+
+      <div id="bulk-preview-summary" class="small" style="margin-bottom:10px;font-weight:600;"></div>
+
+      <div class="modal-actions">
+        <button id="modal-bulk-cancel" type="button" class="btn-secondary">Cancel</button>
+        <button id="btn-execute-import" type="button">Import Roster</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: CREATE SESSION -->
+  <div id="modal-session" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="modal-session-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modal-session-title">Create Attendance Session</h2>
+        <button id="modal-session-close" class="modal-close" type="button" aria-label="Close dialog">×</button>
+      </div>
+      <form id="form-create-session">
+        <label for="session-name-input">Session / Event Name</label>
+        <input id="session-name-input" type="text" required placeholder="e.g. Day 1 Keynote Assembly" style="width:100%;">
+        <p class="small">The new session will immediately become the active attendance event.</p>
+        <div class="modal-actions">
+          <button id="modal-session-cancel" type="button" class="btn-secondary">Cancel</button>
+          <button type="submit">Create & Activate</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <footer class="shell">
+    QR Attendance & Badge Verifier · Powered by Cloudflare D1 and SQLite
+  </footer>
+</body>
+</html>

@@ -108,6 +108,379 @@ async function adminRoute(request, env, path) {
   }
   return errorResponse('Not found', 404);
 }
+
+async function scanAttendee(request, env) {
+  if (await limitReached(request, env)) return errorResponse('Too many scans; try again shortly', 429);
+  let body;
+  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+  if (!body || typeof body.raw !== 'string' || !body.raw.trim()) return errorResponse('Invalid scan payload', 400);
+
+  const raw = body.raw.trim();
+  let resolvedId = raw;
+  let decodedBadge = null;
+
+  // Check if raw matches 84-hex encrypted badge format
+  if (/^[a-fA-F0-9]{84}$/.test(raw)) {
+    try {
+      const key = await activeKey(env);
+      if (key) {
+        const decoded = await decodeBadge(raw, key);
+        if (decoded && !decoded.result) {
+          decodedBadge = decoded;
+          resolvedId = String(decoded.identifier);
+        }
+      }
+    } catch {}
+  }
+
+  // Look up person in database
+  let personRow = await env.DB.prepare(
+    'SELECT id, first_name, last_name, identifier_number, group_name FROM persons WHERE identifier_number = ?'
+  ).bind(resolvedId).first();
+
+  // If not found and input was numeric, try matching trimmed number string
+  if (!personRow && /^\d+$/.test(resolvedId)) {
+    personRow = await env.DB.prepare(
+      'SELECT id, first_name, last_name, identifier_number, group_name FROM persons WHERE CAST(identifier_number AS INTEGER) = ?'
+    ).bind(Number(resolvedId)).first();
+  }
+
+  // Determine active session
+  let sessionId = Number(body.sessionId);
+  if (!sessionId) {
+    const activeSession = await env.DB.prepare('SELECT id FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1').first();
+    sessionId = activeSession ? activeSession.id : 1;
+  }
+
+  let alreadyPresent = false;
+  let markedAt = null;
+
+  if (personRow) {
+    const attRow = await env.DB.prepare(
+      'SELECT id, scanned_at, status FROM attendance_records WHERE session_id = ? AND person_id = ?'
+    ).bind(sessionId, personRow.id).first();
+    if (attRow) {
+      alreadyPresent = true;
+      markedAt = attRow.scanned_at;
+    }
+  }
+
+  // Also log to scan_history
+  const scannedAt = Math.floor(Date.now() / 1000);
+  try {
+    const histResult = personRow ? (alreadyPresent ? 'already_present' : 'valid') : 'not_found';
+    await env.DB.prepare(
+      'INSERT INTO scan_history (scanned_at, result, source, identifier, starts_at, ends_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(
+      scannedAt,
+      histResult,
+      body.source || 'camera',
+      personRow ? personRow.identifier_number : (Number(resolvedId) || null),
+      decodedBadge?.startsAt ?? null,
+      decodedBadge?.endsAt ?? null
+    ).run();
+  } catch {}
+
+  return json({
+    found: Boolean(personRow),
+    rawIdentifier: resolvedId,
+    person: personRow ? {
+      id: personRow.id,
+      firstName: personRow.first_name,
+      lastName: personRow.last_name,
+      identifierNumber: personRow.identifier_number,
+      groupName: personRow.group_name
+    } : null,
+    alreadyPresent,
+    markedAt,
+    sessionId,
+    decodedBadge: decodedBadge ? {
+      identifier: decodedBadge.identifier,
+      startsAt: decodedBadge.startsAt,
+      endsAt: decodedBadge.endsAt
+    } : null
+  });
+}
+
+async function markAttendance(request, env) {
+  let body;
+  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+  const sessionId = Number(body?.sessionId);
+  const personId = Number(body?.personId);
+  if (!sessionId || !personId) return errorResponse('Session ID and Person ID required', 400);
+
+  const person = await env.DB.prepare('SELECT identifier_number FROM persons WHERE id = ?').bind(personId).first();
+  if (!person) return errorResponse('Person not found', 404);
+
+  const scannedAt = Math.floor(Date.now() / 1000);
+  const source = ['camera', 'paste', 'manual'].includes(body.source) ? body.source : 'manual';
+
+  await env.DB.prepare(
+    'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source) VALUES (?, ?, ?, ?, \'present\', ?) ON CONFLICT(session_id, person_id) DO UPDATE SET scanned_at=excluded.scanned_at, source=excluded.source'
+  ).bind(sessionId, personId, person.identifier_number, scannedAt, source).run();
+
+  return json({ success: true, sessionId, personId, scannedAt, source });
+}
+
+async function toggleAttendance(request, env) {
+  let body;
+  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+  const sessionId = Number(body?.sessionId);
+  const personId = Number(body?.personId);
+  if (!sessionId || !personId) return errorResponse('Session ID and Person ID required', 400);
+
+  const existing = await env.DB.prepare(
+    'SELECT id FROM attendance_records WHERE session_id = ? AND person_id = ?'
+  ).bind(sessionId, personId).first();
+
+  if (existing) {
+    await env.DB.prepare('DELETE FROM attendance_records WHERE id = ?').bind(existing.id).run();
+    return json({ success: true, isPresent: false, personId, sessionId });
+  } else {
+    const person = await env.DB.prepare('SELECT identifier_number FROM persons WHERE id = ?').bind(personId).first();
+    if (!person) return errorResponse('Person not found', 404);
+    const scannedAt = Math.floor(Date.now() / 1000);
+    await env.DB.prepare(
+      'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source) VALUES (?, ?, ?, ?, \'present\', \'manual\')'
+    ).bind(sessionId, personId, person.identifier_number, scannedAt).run();
+    return json({ success: true, isPresent: true, personId, sessionId, scannedAt });
+  }
+}
+
+async function getReports(request, env) {
+  const url = new URL(request.url);
+  let sessionId = Number(url.searchParams.get('sessionId'));
+  let session = null;
+
+  if (sessionId) {
+    session = await env.DB.prepare('SELECT id, name, is_active FROM sessions WHERE id = ?').bind(sessionId).first();
+  }
+  if (!session) {
+    session = await env.DB.prepare('SELECT id, name, is_active FROM sessions WHERE is_active = 1 ORDER BY id DESC LIMIT 1').first();
+  }
+  if (!session) {
+    session = await env.DB.prepare('SELECT id, name, is_active FROM sessions ORDER BY id DESC LIMIT 1').first();
+  }
+  if (!session) {
+    return json({ session: null, total: 0, present: 0, missing: 0, percent: 0, groups: [] });
+  }
+
+  const [personsQuery, attendanceQuery] = await Promise.all([
+    env.DB.prepare('SELECT id, first_name, last_name, identifier_number, group_name FROM persons ORDER BY group_name ASC, last_name ASC, first_name ASC').all(),
+    env.DB.prepare('SELECT person_id, scanned_at, status, source FROM attendance_records WHERE session_id = ?').bind(session.id).all()
+  ]);
+
+  const persons = personsQuery.results || [];
+  const attendanceMap = new Map();
+  for (const rec of (attendanceQuery.results || [])) {
+    attendanceMap.set(rec.person_id, rec);
+  }
+
+  const groupMap = new Map();
+  let totalPresent = 0;
+
+  for (const p of persons) {
+    const groupName = p.group_name || 'General';
+    if (!groupMap.has(groupName)) {
+      groupMap.set(groupName, {
+        groupName,
+        total: 0,
+        present: 0,
+        missing: 0,
+        percent: 0,
+        members: []
+      });
+    }
+    const g = groupMap.get(groupName);
+    const att = attendanceMap.get(p.id);
+    const isPresent = Boolean(att);
+    if (isPresent) {
+      g.present++;
+      totalPresent++;
+    } else {
+      g.missing++;
+    }
+    g.total++;
+    g.members.push({
+      id: p.id,
+      firstName: p.first_name,
+      lastName: p.last_name,
+      identifierNumber: p.identifier_number,
+      groupName: p.group_name,
+      isPresent,
+      scannedAt: att ? att.scanned_at : null,
+      source: att ? att.source : null
+    });
+  }
+
+  const groups = Array.from(groupMap.values()).map(g => ({
+    ...g,
+    percent: g.total > 0 ? Math.round((g.present / g.total) * 100) : 0
+  }));
+
+  const totalPersons = persons.length;
+  const totalMissing = totalPersons - totalPresent;
+  const overallPercent = totalPersons > 0 ? Math.round((totalPresent / totalPersons) * 100) : 0;
+
+  return json({
+    session: { id: session.id, name: session.name, isActive: Boolean(session.is_active) },
+    total: totalPersons,
+    present: totalPresent,
+    missing: totalMissing,
+    percent: overallPercent,
+    groups,
+    generatedAt: Math.floor(Date.now() / 1000)
+  });
+}
+
+async function listPersons(request, env) {
+  const url = new URL(request.url);
+  const search = (url.searchParams.get('search') || '').trim().toLowerCase();
+  const group = (url.searchParams.get('group') || '').trim();
+
+  let query = 'SELECT id, first_name, last_name, identifier_number, group_name, created_at FROM persons';
+  const conditions = [];
+  const bindings = [];
+
+  if (group) {
+    conditions.push('group_name = ?');
+    bindings.push(group);
+  }
+  if (search) {
+    conditions.push('(LOWER(first_name) LIKE ? OR LOWER(last_name) LIKE ? OR LOWER(identifier_number) LIKE ?)');
+    const term = `%${search}%`;
+    bindings.push(term, term, term);
+  }
+
+  if (conditions.length > 0) {
+    query += ' WHERE ' + conditions.join(' AND ');
+  }
+  query += ' ORDER BY group_name ASC, last_name ASC, first_name ASC';
+
+  const [personsResult, groupsResult] = await Promise.all([
+    env.DB.prepare(query).bind(...bindings).all(),
+    env.DB.prepare('SELECT DISTINCT group_name FROM persons ORDER BY group_name ASC').all()
+  ]);
+
+  return json({
+    persons: (personsResult.results || []).map(p => ({
+      id: p.id,
+      firstName: p.first_name,
+      lastName: p.last_name,
+      identifierNumber: p.identifier_number,
+      groupName: p.group_name,
+      createdAt: p.created_at
+    })),
+    groups: (groupsResult.results || []).map(g => g.group_name)
+  });
+}
+
+async function createPerson(request, env) {
+  let body;
+  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+  const firstName = (body?.firstName || '').trim();
+  const lastName = (body?.lastName || '').trim();
+  const identifierNumber = String(body?.identifierNumber || '').trim();
+  const groupName = (body?.groupName || '').trim() || 'General';
+
+  if (!firstName || !lastName || !identifierNumber) {
+    return errorResponse('First name, last name, and identifier number are required', 400);
+  }
+
+  const existing = await env.DB.prepare('SELECT id FROM persons WHERE identifier_number = ?').bind(identifierNumber).first();
+  if (existing) return errorResponse(`Identifier number "${identifierNumber}" already exists`, 409);
+
+  const createdAt = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    'INSERT INTO persons (first_name, last_name, identifier_number, group_name, created_at) VALUES (?, ?, ?, ?, ?)'
+  ).bind(firstName, lastName, identifierNumber, groupName, createdAt).run();
+
+  const inserted = await env.DB.prepare('SELECT id, first_name, last_name, identifier_number, group_name FROM persons WHERE identifier_number = ?').bind(identifierNumber).first();
+
+  return json({
+    success: true,
+    person: {
+      id: inserted.id,
+      firstName: inserted.first_name,
+      lastName: inserted.last_name,
+      identifierNumber: inserted.identifier_number,
+      groupName: inserted.group_name
+    }
+  });
+}
+
+async function deletePerson(request, env) {
+  let body;
+  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+  const id = Number(body?.id);
+  if (!id) return errorResponse('Person ID required', 400);
+
+  await env.DB.prepare('DELETE FROM attendance_records WHERE person_id = ?').bind(id).run();
+  await env.DB.prepare('DELETE FROM persons WHERE id = ?').bind(id).run();
+  return json({ success: true, deletedId: id });
+}
+
+async function bulkImportPersons(request, env) {
+  let body;
+  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+  const list = body?.persons;
+  if (!Array.isArray(list) || list.length === 0) return errorResponse('Array of persons required', 400);
+
+  const createdAt = Math.floor(Date.now() / 1000);
+  let importedCount = 0;
+
+  for (const item of list) {
+    const firstName = String(item.firstName || item.first_name || '').trim();
+    const lastName = String(item.lastName || item.last_name || '').trim();
+    const identifierNumber = String(item.identifierNumber || item.identifier_number || item.id || '').trim();
+    const groupName = String(item.groupName || item.group_name || item.group || 'General').trim();
+
+    if (!firstName || !lastName || !identifierNumber) continue;
+
+    await env.DB.prepare(
+      'INSERT INTO persons (first_name, last_name, identifier_number, group_name, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(identifier_number) DO UPDATE SET first_name=excluded.first_name, last_name=excluded.last_name, group_name=excluded.group_name'
+    ).bind(firstName, lastName, identifierNumber, groupName, createdAt).run();
+    importedCount++;
+  }
+
+  return json({ success: true, count: importedCount, totalSubmitted: list.length });
+}
+
+async function listSessions(request, env) {
+  const rows = await env.DB.prepare('SELECT id, name, is_active, created_at FROM sessions ORDER BY is_active DESC, created_at DESC, id DESC').all();
+  return json({ sessions: rows.results || [] });
+}
+
+async function createSession(request, env) {
+  let body;
+  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+  const name = String(body?.name || '').trim();
+  if (!name) return errorResponse('Session name required', 400);
+
+  const createdAt = Math.floor(Date.now() / 1000);
+  try {
+    await env.DB.prepare('INSERT INTO sessions (name, is_active, created_at) VALUES (?, 1, ?)').bind(name, createdAt).run();
+    const inserted = await env.DB.prepare('SELECT id, name, is_active, created_at FROM sessions WHERE name = ?').bind(name).first();
+    // Set this newly created session as active
+    await env.DB.prepare('UPDATE sessions SET is_active = 0 WHERE id != ?').bind(inserted.id).run();
+    return json({ success: true, session: inserted });
+  } catch {
+    return errorResponse('Session name already exists', 409);
+  }
+}
+
+async function setActiveSession(request, env) {
+  let body;
+  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+  const id = Number(body?.id);
+  if (!id) return errorResponse('Session ID required', 400);
+
+  await env.DB.prepare('UPDATE sessions SET is_active = 0').run();
+  await env.DB.prepare('UPDATE sessions SET is_active = 1 WHERE id = ?').bind(id).run();
+  const session = await env.DB.prepare('SELECT id, name, is_active FROM sessions WHERE id = ?').bind(id).first();
+  return json({ success: true, session });
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -116,7 +489,23 @@ export default {
     try {
       if (path === '/admin.html') return Response.redirect(new URL('/admin/', url), 302);
       if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method) && !acceptedMutation(request)) return errorResponse('JSON from this origin required', 415);
+
+      // Existing verification & admin routes
       if (path === '/api/verify' && request.method === 'POST') return await verify(request, env);
+
+      // New Attendance & Roster Routes
+      if (path === '/api/scan' && request.method === 'POST') return await scanAttendee(request, env);
+      if (path === '/api/attendance/mark' && request.method === 'POST') return await markAttendance(request, env);
+      if (path === '/api/attendance/toggle' && request.method === 'POST') return await toggleAttendance(request, env);
+      if (path === '/api/reports' && request.method === 'GET') return await getReports(request, env);
+      if (path === '/api/persons' && request.method === 'GET') return await listPersons(request, env);
+      if (path === '/api/persons' && request.method === 'POST') return await createPerson(request, env);
+      if (path === '/api/persons/delete' && request.method === 'POST') return await deletePerson(request, env);
+      if (path === '/api/persons/bulk' && request.method === 'POST') return await bulkImportPersons(request, env);
+      if (path === '/api/sessions' && request.method === 'GET') return await listSessions(request, env);
+      if (path === '/api/sessions' && request.method === 'POST') return await createSession(request, env);
+      if (path === '/api/sessions/active' && request.method === 'POST') return await setActiveSession(request, env);
+
       if (path === '/admin' || path === '/admin/' || path.startsWith('/api/admin/')) {
         if (!(await authorized(request, env))) return unauthorized();
         if (path.startsWith('/api/admin/')) return await adminRoute(request, env, path);

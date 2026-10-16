@@ -1,0 +1,8 @@
+{
+  "name": "QR Badge Verifier",
+  "description": "Public online camera and paste-hex verifier for time-based badge QR codes, with admin key management and scan history.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
