@@ -13,6 +13,7 @@ const createEnv = () => {
   sqlite.exec(readFileSync(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0002_rate_limit.sql', import.meta.url), 'utf8'));
   sqlite.exec(readFileSync(new URL('../migrations/0003_attendance.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../migrations/0004_supervisors_and_pwa.sql', import.meta.url), 'utf8'));
   return {
     STORAGE_KEY_HEX: 'D4'.repeat(32),
     ADMIN_BASIC_USERNAME: 'admin',

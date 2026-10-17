@@ -1,6 +1,6 @@
 {
-  "name": "QR Badge Verifier",
-  "description": "Public online camera and paste-hex verifier for time-based badge QR codes, with admin key management and scan history.",
+  "name": "QRPass",
+  "description": "Mobile-first QR attendance verification and live reporting for event supervisors and administrators.",
   "permissions": [],
   "capabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

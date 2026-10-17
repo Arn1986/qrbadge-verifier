@@ -63,9 +63,41 @@ const sqlite = new DatabaseSync(dbPath);
 const migration1 = fs.readFileSync(new URL('./migrations/0001_initial.sql', import.meta.url), 'utf8');
 const migration2 = fs.readFileSync(new URL('./migrations/0002_rate_limit.sql', import.meta.url), 'utf8');
 const migration3 = fs.readFileSync(new URL('./migrations/0003_attendance.sql', import.meta.url), 'utf8');
+const migration4 = fs.readFileSync(new URL('./migrations/0004_supervisors_and_pwa.sql', import.meta.url), 'utf8');
 sqlite.exec(migration1);
 sqlite.exec(migration2);
 sqlite.exec(migration3);
+sqlite.exec(migration4);
+
+// Safely ensure verified_by columns exist on attendance_records
+try {
+  const tableInfo = sqlite.prepare('PRAGMA table_info(attendance_records)').all();
+  const columnNames = tableInfo.map(c => c.name);
+  if (!columnNames.includes('verified_by_name')) {
+    sqlite.exec('ALTER TABLE attendance_records ADD COLUMN verified_by_name TEXT;');
+  }
+  if (!columnNames.includes('verified_by_id')) {
+    sqlite.exec('ALTER TABLE attendance_records ADD COLUMN verified_by_id INTEGER;');
+  }
+} catch (e) {
+  console.warn('Column check note:', e.message);
+}
+
+// Seed default admin and supervisor accounts if table empty
+try {
+  const userCount = sqlite.prepare('SELECT count(*) as count FROM users').get();
+  if (userCount && userCount.count === 0) {
+    const createdAt = Math.floor(Date.now() / 1000);
+    const adminHash = crypto.createHash('sha256').update('qrpass-salt:admin123').digest('hex');
+    const supHash = crypto.createHash('sha256').update('qrpass-salt:supervisor123').digest('hex');
+    sqlite.prepare('INSERT INTO users (username, password_hash, display_name, role, created_at) VALUES (?, ?, ?, ?, ?)').run('admin', adminHash, 'Administrator', 'admin', createdAt);
+    sqlite.prepare('INSERT INTO users (username, password_hash, display_name, role, created_at) VALUES (?, ?, ?, ?, ?)').run('supervisor1', supHash, 'Supervisor Alex', 'supervisor', createdAt);
+    sqlite.prepare('INSERT INTO users (username, password_hash, display_name, role, created_at) VALUES (?, ?, ?, ?, ?)').run('supervisor2', supHash, 'Supervisor Jordan', 'supervisor', createdAt);
+    console.log('Seeded default admin (admin / admin123) and supervisors (supervisor1, supervisor2 / supervisor123).');
+  }
+} catch (e) {
+  console.warn('User seed note:', e.message);
+}
 
 function wrap(query, values) {
   return {

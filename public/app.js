@@ -1,5 +1,5 @@
 (() => {
-  // App state
+  // Application State
   let currentSessionId = 1;
   let sessions = [];
   let currentReports = null;
@@ -10,6 +10,9 @@
   let activeReportGroup = '';
   let activeReportSearch = '';
   let pendingAttendee = null;
+  let currentUser = null;
+  let deferredInstallPrompt = null;
+  let syncTimer = null;
 
   // Scanner state
   let videoStream = null;
@@ -22,41 +25,86 @@
   // DOM Elements
   const video = document.querySelector('#video');
   const cameraEmpty = document.querySelector('#camera-empty');
+  const scanReticle = document.querySelector('#scan-reticle');
   const startBtn = document.querySelector('#start');
+  const stopBtn = document.querySelector('#stop');
   const againBtn = document.querySelector('#again');
   const cameraLabel = document.querySelector('#camera-label');
   const camerasSelect = document.querySelector('#cameras');
   const cameraStatus = document.querySelector('#camera-status');
   const sessionSelect = document.querySelector('#session-select');
   const toastContainer = document.querySelector('#toast-container');
+  const syncStatusBadge = document.querySelector('#sync-status-badge');
+  const syncStatusText = document.querySelector('#sync-status-text');
+  const offlineBanner = document.querySelector('#offline-banner');
 
-  // Confirmation Modal elements
+  // User & Header Elements
+  const userDisplayName = document.querySelector('#user-display-name');
+  const userRoleBadge = document.querySelector('#user-role-badge');
+  const btnSwitchUser = document.querySelector('#btn-switch-user');
+  const btnInstallPwa = document.querySelector('#btn-install-pwa');
+  const btnOpenSessionModal = document.querySelector('#btn-open-session-modal');
+
+  // Confirmation Modal Elements
   const modalConfirm = document.querySelector('#modal-confirm');
   const modalAvatar = document.querySelector('#modal-avatar');
   const modalPersonName = document.querySelector('#modal-person-name');
   const modalPersonId = document.querySelector('#modal-person-id');
   const modalPersonGroup = document.querySelector('#modal-person-group');
   const modalStatusBadge = document.querySelector('#modal-status-badge');
+  const modalVerifierName = document.querySelector('#modal-verifier-name');
   const modalTimeInfo = document.querySelector('#modal-time-info');
   const modalConfirmBtn = document.querySelector('#modal-confirm-btn');
   const modalCancelBtn = document.querySelector('#modal-cancel-btn');
   const modalCloseBtn = document.querySelector('#modal-close-btn');
 
-  // Utility: API caller
+  // Login Modal Elements
+  const modalLogin = document.querySelector('#modal-login');
+  const formLogin = document.querySelector('#form-login');
+  const loginUsernameInput = document.querySelector('#login-username');
+  const loginPasswordInput = document.querySelector('#login-password');
+  const modalLoginClose = document.querySelector('#modal-login-close');
+  const modalLoginCancel = document.querySelector('#modal-login-cancel');
+
+  // -------------------------------------------------------------
+  // API HELPER
+  // -------------------------------------------------------------
+  function getAuthToken() {
+    return localStorage.getItem('qrpass_auth_token') || '';
+  }
+
+  function setAuthToken(token) {
+    if (token) {
+      localStorage.setItem('qrpass_auth_token', token);
+      document.cookie = `qrpass_token=${encodeURIComponent(token)}; path=/; max-age=2592000; SameSite=Lax`;
+    } else {
+      localStorage.removeItem('qrpass_auth_token');
+      document.cookie = 'qrpass_token=; path=/; max-age=0; SameSite=Lax';
+    }
+  }
+
   async function api(path, options = {}) {
+    const token = getAuthToken();
+    const headers = {
+      'content-type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(options.headers || {})
+    };
+
     const res = await fetch(path, {
       ...options,
-      headers: {
-        'content-type': 'application/json',
-        ...(options.headers || {})
-      }
+      headers
     });
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || 'Request failed');
+    if (!res.ok) {
+      const err = new Error(data.error || 'Request failed');
+      err.status = res.status;
+      throw err;
+    }
     return data;
   }
 
-  // Toast notification
+  // Toast Notification
   function showToast(message, type = 'info', duration = 3500) {
     const toast = document.createElement('div');
     toast.className = `toast-notice ${type}`;
@@ -69,7 +117,6 @@
     }, duration);
   }
 
-  // Format Unix timestamp
   function formatTime(unixSec) {
     if (!unixSec) return '—';
     return new Intl.DateTimeFormat(undefined, {
@@ -89,31 +136,151 @@
     }).format(new Date(unixSec * 1000));
   }
 
-  // Navigation tab switcher
+  // -------------------------------------------------------------
+  // AUTHENTICATION & ROLE MANAGEMENT
+  // -------------------------------------------------------------
+  async function initAuth() {
+    const token = getAuthToken();
+    if (token) {
+      try {
+        const data = await api('/api/auth/me');
+        if (data.user) {
+          setUser(data.user);
+          return;
+        }
+      } catch {
+        setAuthToken('');
+      }
+    }
+
+    // Default auto-login to supervisor1 for instant frictionless experience
+    try {
+      const loginRes = await api('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username: 'supervisor1', password: 'supervisor123' })
+      });
+      setAuthToken(loginRes.token);
+      setUser(loginRes.user);
+    } catch {
+      // If default login fails, show login modal
+      openLoginModal();
+    }
+  }
+
+  function setUser(user) {
+    currentUser = user;
+    userDisplayName.textContent = user.displayName || user.username;
+    userRoleBadge.textContent = (user.role || 'supervisor').toUpperCase();
+
+    if (user.role === 'admin') {
+      userRoleBadge.style.background = '#106356';
+      document.querySelectorAll('.admin-only').forEach(el => el.hidden = false);
+      if (btnOpenSessionModal) btnOpenSessionModal.hidden = false;
+    } else {
+      userRoleBadge.style.background = '#ff662a';
+      document.querySelectorAll('.admin-only').forEach(el => el.hidden = true);
+      if (btnOpenSessionModal) btnOpenSessionModal.hidden = true;
+
+      // If user was on an admin tab, switch to scanner
+      const activeTab = document.querySelector('.nav-tab.active')?.dataset.tab;
+      if (activeTab === 'roster' || activeTab === 'supervisors' || activeTab === 'settings') {
+        switchTab('scanner');
+      }
+    }
+  }
+
+  function openLoginModal() {
+    modalLogin.hidden = false;
+    loginUsernameInput.focus();
+  }
+
+  function closeLoginModal() {
+    modalLogin.hidden = true;
+  }
+
+  btnSwitchUser?.addEventListener('click', openLoginModal);
+  modalLoginClose?.addEventListener('click', closeLoginModal);
+  modalLoginCancel?.addEventListener('click', closeLoginModal);
+
+  formLogin?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = loginUsernameInput.value.trim();
+    const password = loginPasswordInput.value.trim();
+    if (!username || !password) return;
+
+    try {
+      const data = await api('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username, password })
+      });
+      setAuthToken(data.token);
+      setUser(data.user);
+      closeLoginModal();
+      formLogin.reset();
+      showToast(`Logged in as ${data.user.displayName}`, 'success');
+      loadSessions();
+      loadReports();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  });
+
+  // Quick Sign-in helpers
+  document.querySelector('#btn-quick-login-sup1')?.addEventListener('click', async () => {
+    loginUsernameInput.value = 'supervisor1';
+    loginPasswordInput.value = 'supervisor123';
+    formLogin.requestSubmit();
+  });
+
+  document.querySelector('#btn-quick-login-sup2')?.addEventListener('click', async () => {
+    loginUsernameInput.value = 'supervisor2';
+    loginPasswordInput.value = 'supervisor123';
+    formLogin.requestSubmit();
+  });
+
+  document.querySelector('#btn-quick-login-admin')?.addEventListener('click', async () => {
+    loginUsernameInput.value = 'admin';
+    loginPasswordInput.value = 'admin123';
+    formLogin.requestSubmit();
+  });
+
+  // -------------------------------------------------------------
+  // NAVIGATION TABS
+  // -------------------------------------------------------------
+  function switchTab(tabName) {
+    const tabs = document.querySelectorAll('.nav-tab');
+    tabs.forEach(t => {
+      if (t.dataset.tab === tabName) {
+        t.classList.add('active');
+        t.setAttribute('aria-selected', 'true');
+      } else {
+        t.classList.remove('active');
+        t.setAttribute('aria-selected', 'false');
+      }
+    });
+
+    document.querySelectorAll('main > section').forEach(sec => sec.hidden = true);
+    const activeSec = document.querySelector(`#view-${tabName}`);
+    if (activeSec) activeSec.hidden = false;
+
+    if (tabName === 'reports') loadReports();
+    if (tabName === 'roster') loadRoster();
+    if (tabName === 'supervisors') loadSupervisors();
+    if (tabName === 'settings') loadSettings();
+  }
+
   function initTabs() {
     const tabs = document.querySelectorAll('.nav-tab');
     tabs.forEach(tab => {
       tab.addEventListener('click', () => {
-        tabs.forEach(t => {
-          t.classList.remove('active');
-          t.setAttribute('aria-selected', 'false');
-        });
-        tab.classList.add('active');
-        tab.setAttribute('aria-selected', 'true');
-
-        const tabName = tab.dataset.tab;
-        document.querySelectorAll('main > section').forEach(sec => sec.hidden = true);
-        const activeSec = document.querySelector(`#view-${tabName}`);
-        if (activeSec) activeSec.hidden = false;
-
-        if (tabName === 'reports') loadReports();
-        if (tabName === 'roster') loadRoster();
-        if (tabName === 'settings') loadSettings();
+        switchTab(tab.dataset.tab);
       });
     });
   }
 
-  // Session Management
+  // -------------------------------------------------------------
+  // SESSIONS
+  // -------------------------------------------------------------
   async function loadSessions() {
     try {
       const data = await api('/api/sessions');
@@ -137,17 +304,17 @@
     }
   }
 
-  sessionSelect.addEventListener('change', async () => {
+  sessionSelect?.addEventListener('change', async () => {
     currentSessionId = Number(sessionSelect.value);
-    showToast(`Switched session to "${sessionSelect.selectedOptions[0]?.text}"`, 'info');
+    showToast(`Switched event to "${sessionSelect.selectedOptions[0]?.text}"`, 'info');
     recentCheckins = [];
     renderRecentCheckins();
     loadReports();
   });
 
-  // Modal: Create Session
+  // Modal: Create Session (Admin only)
   const sessionModal = document.querySelector('#modal-session');
-  document.querySelector('#btn-open-session-modal')?.addEventListener('click', () => {
+  btnOpenSessionModal?.addEventListener('click', () => {
     sessionModal.hidden = false;
     document.querySelector('#session-name-input').focus();
   });
@@ -160,13 +327,13 @@
     const name = nameInput.value.trim();
     if (!name) return;
     try {
-      const res = await api('/api/sessions', {
+      await api('/api/sessions', {
         method: 'POST',
         body: JSON.stringify({ name })
       });
       nameInput.value = '';
       sessionModal.hidden = true;
-      showToast(`Session "${name}" created and set as active`, 'success');
+      showToast(`Event "${name}" created and set active!`, 'success');
       await loadSessions();
       loadReports();
     } catch (err) {
@@ -175,7 +342,7 @@
   });
 
   // -------------------------------------------------------------
-  // SCANNER & ATTENDANCE CONFIRMATION POPUP
+  // CAMERA SCANNER WITH EXPLICIT START & STOP CONTROLS
   // -------------------------------------------------------------
   async function updateCameras() {
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -205,8 +372,10 @@
       videoStream = null;
     }
     video.style.display = 'none';
+    if (scanReticle) scanReticle.hidden = true;
     cameraEmpty.style.display = 'grid';
     startBtn.hidden = false;
+    stopBtn.hidden = true;
     againBtn.hidden = true;
     cameraStatus.textContent = 'Camera is off.';
   }
@@ -230,16 +399,18 @@
       await video.play();
 
       video.style.display = 'block';
+      if (scanReticle) scanReticle.hidden = false;
       cameraEmpty.style.display = 'none';
       startBtn.hidden = true;
-      againBtn.hidden = false;
-      cameraStatus.textContent = 'Ready. Position QR code within frame.';
+      stopBtn.hidden = false;
+      againBtn.hidden = true;
+      cameraStatus.textContent = 'Ready. Position attendee QR badge in frame.';
       isScanning = true;
       await updateCameras();
       requestAnimationFrame(scanFrame);
-    } catch (err) {
+    } catch {
       stopCamera();
-      cameraStatus.textContent = 'Camera error or permission denied. You can still paste or type identifiers below.';
+      cameraStatus.textContent = 'Camera access denied or unavailable. Use manual lookup below.';
     }
   }
 
@@ -269,7 +440,7 @@
     window.BadgeSounds?.unlock();
 
     try {
-      cameraStatus.textContent = 'Verifying identifier...';
+      cameraStatus.textContent = 'Verifying identifier in database...';
       const result = await api('/api/scan', {
         method: 'POST',
         body: JSON.stringify({
@@ -281,18 +452,17 @@
 
       if (!result.found) {
         window.BadgeSounds?.play('not_found');
-        cameraStatus.textContent = `Identifier "${result.rawIdentifier}" not found in roster.`;
-        showToast(`Identifier "${result.rawIdentifier}" is not registered in the roster.`, 'error');
-        setTimeout(() => { scanBusy = false; }, 1500);
+        cameraStatus.textContent = `Identifier "${result.rawIdentifier}" is not registered in the roster.`;
+        showToast(`Identifier "${result.rawIdentifier}" not found.`, 'error');
+        setTimeout(() => { scanBusy = false; }, 1600);
         return;
       }
 
-      // Found attendee -> Open Confirmation Modal
       openConfirmModal(result, source);
     } catch (err) {
       cameraStatus.textContent = 'Error processing scan.';
       showToast(err.message, 'error');
-      setTimeout(() => { scanBusy = false; }, 1500);
+      setTimeout(() => { scanBusy = false; }, 1600);
     }
   }
 
@@ -310,14 +480,15 @@
     modalPersonId.textContent = p.identifierNumber;
     modalPersonGroup.textContent = p.groupName || 'General';
 
-    // Initials avatar
     const initials = `${p.firstName?.[0] || ''}${p.lastName?.[0] || ''}`.toUpperCase() || 'ID';
     modalAvatar.textContent = initials;
+
+    modalVerifierName.textContent = currentUser?.displayName || 'Supervisor';
 
     if (scanResult.alreadyPresent) {
       window.BadgeSounds?.play('already_present');
       modalStatusBadge.className = 'attendee-status-badge already';
-      modalStatusBadge.textContent = 'Already Marked Present';
+      modalStatusBadge.textContent = 'Already Checked In';
       modalTimeInfo.textContent = `Check-in recorded at ${formatTime(scanResult.markedAt)}`;
       modalConfirmBtn.textContent = 'Keep Present';
       modalConfirmBtn.className = 'btn-secondary btn-full';
@@ -325,7 +496,7 @@
       window.BadgeSounds?.play('valid');
       modalStatusBadge.className = 'attendee-status-badge new';
       modalStatusBadge.textContent = 'Ready for Check-in';
-      modalTimeInfo.textContent = `Session: ${sessionSelect.selectedOptions[0]?.text || 'Active Session'}`;
+      modalTimeInfo.textContent = `Event: ${sessionSelect.selectedOptions[0]?.text || 'Active Event'}`;
       modalConfirmBtn.textContent = 'Mark Present (Enter)';
       modalConfirmBtn.className = 'btn-full';
     }
@@ -358,13 +529,16 @@
         window.BadgeSounds?.play('valid');
         showToast(`${firstName} ${lastName} marked present!`, 'success');
 
-        // Add to recent check-ins
+        const supervisorName = markRes.verifiedByName || currentUser?.displayName || 'Supervisor';
+
+        // Add to recent check-ins table
         recentCheckins.unshift({
           firstName,
           lastName,
           identifierNumber,
           groupName,
-          scannedAt: markRes.scannedAt
+          scannedAt: markRes.scannedAt,
+          verifiedByName: supervisorName
         });
         renderRecentCheckins();
       } catch (err) {
@@ -375,11 +549,10 @@
     closeConfirmModal();
   }
 
-  modalConfirmBtn.addEventListener('click', confirmMarkPresent);
-  modalCancelBtn.addEventListener('click', closeConfirmModal);
-  modalCloseBtn.addEventListener('click', closeConfirmModal);
+  modalConfirmBtn?.addEventListener('click', confirmMarkPresent);
+  modalCancelBtn?.addEventListener('click', closeConfirmModal);
+  modalCloseBtn?.addEventListener('click', closeConfirmModal);
 
-  // Keyboard accessibility
   window.addEventListener('keydown', (e) => {
     if (!modalConfirm.hidden) {
       if (e.key === 'Enter') {
@@ -391,25 +564,26 @@
     }
   });
 
-  // Recent checkins rendering
+  // Recent Check-ins Table
   function renderRecentCheckins() {
     const tbody = document.querySelector('#recent-table-body');
     const countEl = document.querySelector('#recent-count');
-    countEl.textContent = `${recentCheckins.length} check-in${recentCheckins.length === 1 ? '' : 's'}`;
+    countEl.textContent = `${recentCheckins.length} attendee${recentCheckins.length === 1 ? '' : 's'} checked in`;
 
     if (recentCheckins.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#6d8496;padding:24px;">No check-ins logged yet in this session. Start scanning above!</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#6d8496;padding:24px;">No check-ins logged yet in this event. Start scanning above!</td></tr>';
       return;
     }
 
     tbody.innerHTML = '';
-    recentCheckins.slice(0, 10).forEach(item => {
+    recentCheckins.slice(0, 12).forEach(item => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td><strong>${escapeHtml(item.firstName)} ${escapeHtml(item.lastName)}</strong></td>
         <td><span class="tabular">${escapeHtml(item.identifierNumber)}</span></td>
         <td>${escapeHtml(item.groupName || 'General')}</td>
         <td class="tabular">${formatTime(item.scannedAt)}</td>
+        <td><span class="supervisor-tag">👤 ${escapeHtml(item.verifiedByName || 'Supervisor')}</span></td>
         <td><span class="badge-status present">✓ Present</span></td>
       `;
       tbody.append(tr);
@@ -427,9 +601,10 @@
     hexInput.value = '';
   });
 
-  startBtn.addEventListener('click', startCamera);
-  againBtn.addEventListener('click', startCamera);
-  camerasSelect.addEventListener('change', () => {
+  startBtn?.addEventListener('click', startCamera);
+  stopBtn?.addEventListener('click', stopCamera);
+  againBtn?.addEventListener('click', startCamera);
+  camerasSelect?.addEventListener('change', () => {
     selectedCamera = camerasSelect.value;
     startCamera();
   });
@@ -437,15 +612,48 @@
   window.addEventListener('pagehide', stopCamera);
 
   // -------------------------------------------------------------
-  // REPORTS VIEW
+  // REPORTS VIEW (Group Attendance & Supervisor Attribution)
   // -------------------------------------------------------------
-  async function loadReports() {
+  async function loadReports(silent = false) {
     try {
       const data = await api(`/api/reports?sessionId=${currentSessionId}`);
       currentReports = data;
       renderReports();
+
+      // If recentCheckins is empty, seed it from the most recent present attendees
+      if (recentCheckins.length === 0 && data.groups) {
+        const presents = [];
+        data.groups.forEach(g => {
+          g.members.forEach(m => {
+            if (m.isPresent && m.scannedAt) {
+              presents.push({
+                firstName: m.firstName,
+                lastName: m.lastName,
+                identifierNumber: m.identifierNumber,
+                groupName: m.groupName,
+                scannedAt: m.scannedAt,
+                verifiedByName: m.verifiedByName
+              });
+            }
+          });
+        });
+        presents.sort((a, b) => b.scannedAt - a.scannedAt);
+        recentCheckins = presents.slice(0, 15);
+        renderRecentCheckins();
+      }
+
+      if (!silent) {
+        flashSyncIndicator();
+      }
     } catch (err) {
       console.warn('Failed to load reports:', err);
+    }
+  }
+
+  function flashSyncIndicator() {
+    if (syncStatusBadge) {
+      syncStatusBadge.classList.add('syncing');
+      setTimeout(() => syncStatusBadge.classList.remove('syncing'), 800);
     }
   }
 
@@ -453,15 +661,15 @@
     if (!currentReports) return;
     const { session, total, present, missing, percent, groups, generatedAt } = currentReports;
 
-    document.querySelector('#report-session-title').textContent = `${session?.name || 'Session'} — Attendance Report`;
-    document.querySelector('#report-last-updated').textContent = `Generated at ${formatTime(generatedAt)}`;
+    document.querySelector('#report-session-title').textContent = `${session?.name || 'Event'} — Attendance Report`;
+    document.querySelector('#report-last-updated').textContent = `Live synced at ${formatTime(generatedAt)}`;
 
     document.querySelector('#kpi-total').textContent = total;
     document.querySelector('#kpi-present').textContent = present;
     document.querySelector('#kpi-missing').textContent = missing;
     document.querySelector('#kpi-percent').textContent = `${percent}%`;
 
-    // Render group cards
+    // Group cards
     const groupCardsContainer = document.querySelector('#group-cards-container');
     groupCardsContainer.innerHTML = '';
 
@@ -470,14 +678,12 @@
     groupFilterSelect.innerHTML = '<option value="">All Groups</option>';
 
     groups.forEach(g => {
-      // Group select option
       const opt = document.createElement('option');
       opt.value = g.groupName;
       opt.textContent = `${g.groupName} (${g.present}/${g.total})`;
       if (opt.value === currentSelectedGroup) opt.selected = true;
       groupFilterSelect.append(opt);
 
-      // Group Card
       const card = document.createElement('div');
       card.className = `group-card ${activeReportGroup === g.groupName ? 'selected' : ''}`;
       card.innerHTML = `
@@ -526,7 +732,6 @@
     const tbody = document.querySelector('#report-table-body');
     tbody.innerHTML = '';
 
-    // Collect all members across all or selected groups
     let list = [];
     currentReports.groups.forEach(g => {
       if (!activeReportGroup || g.groupName === activeReportGroup) {
@@ -534,14 +739,12 @@
       }
     });
 
-    // Apply status filter
     if (activeReportFilter === 'present') {
       list = list.filter(m => m.isPresent);
     } else if (activeReportFilter === 'missing') {
       list = list.filter(m => !m.isPresent);
     }
 
-    // Apply search filter
     if (activeReportSearch) {
       const q = activeReportSearch.toLowerCase();
       list = list.filter(m =>
@@ -551,7 +754,7 @@
     }
 
     if (list.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:#6d8496;padding:24px;">No attendees match the selected filter.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#6d8496;padding:24px;">No attendees match the selected filter.</td></tr>';
       return;
     }
 
@@ -567,6 +770,7 @@
           </span>
         </td>
         <td class="tabular">${m.isPresent ? formatTime(m.scannedAt) : '—'}</td>
+        <td><span class="supervisor-tag">${m.isPresent ? `👤 ${escapeHtml(m.verifiedByName || 'Supervisor')}` : '—'}</span></td>
         <td>
           <button type="button" class="btn-sm ${m.isPresent ? 'btn-outline' : ''}" data-id="${m.id}">
             ${m.isPresent ? 'Mark Absent' : 'Mark Present'}
@@ -576,13 +780,14 @@
 
       tr.querySelector('button').addEventListener('click', async () => {
         try {
-          await api('/api/attendance/toggle', {
+          const res = await api('/api/attendance/toggle', {
             method: 'POST',
             body: JSON.stringify({
               sessionId: currentSessionId,
               personId: m.id
             })
           });
+          showToast(res.isPresent ? `Marked ${m.firstName} present` : `Marked ${m.firstName} absent`, 'info');
           loadReports();
         } catch (err) {
           showToast(err.message, 'error');
@@ -619,14 +824,15 @@
     showToast('Attendance report refreshed', 'info');
   });
 
-  // Export CSV
+  // Export CSV with Verified By supervisor attribution
   document.querySelector('#btn-export-csv')?.addEventListener('click', () => {
     if (!currentReports) return;
-    let csv = 'First Name,Last Name,Identifier,Group,Status,Check-in Time\r\n';
+    let csv = 'First Name,Last Name,Identifier,Group,Status,Check-in Time,Verified By\r\n';
     currentReports.groups.forEach(g => {
       g.members.forEach(m => {
         const timeStr = m.isPresent && m.scannedAt ? new Date(m.scannedAt * 1000).toISOString() : '';
-        csv += `"${m.firstName}","${m.lastName}","${m.identifierNumber}","${m.groupName}","${m.isPresent ? 'Present' : 'Missing'}","${timeStr}"\r\n`;
+        const verifiedBy = m.isPresent ? (m.verifiedByName || 'Supervisor') : '';
+        csv += `"${m.firstName}","${m.lastName}","${m.identifierNumber}","${m.groupName}","${m.isPresent ? 'Present' : 'Missing'}","${timeStr}","${verifiedBy}"\r\n`;
       });
     });
 
@@ -634,14 +840,14 @@
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `attendance_report_${currentReports.session?.name || 'session'}_${Date.now()}.csv`;
+    a.download = `attendance_report_${currentReports.session?.name || 'event'}_${Date.now()}.csv`;
     a.click();
     URL.revokeObjectURL(url);
-    showToast('Exported report to CSV', 'success');
+    showToast('Exported report to CSV with supervisor audit trail', 'success');
   });
 
   // -------------------------------------------------------------
-  // ROSTER & BULK IMPORT VIEW
+  // ROSTER VIEW (Admin Only)
   // -------------------------------------------------------------
   async function loadRoster() {
     try {
@@ -670,7 +876,6 @@
       groupSelect.append(opt);
     });
 
-    // Also populate add-person datalist
     const datalist = document.querySelector('#group-suggestions');
     if (datalist) {
       datalist.innerHTML = '';
@@ -760,7 +965,6 @@
   document.querySelector('#modal-bulk-close')?.addEventListener('click', () => bulkModal.hidden = true);
   document.querySelector('#modal-bulk-cancel')?.addEventListener('click', () => bulkModal.hidden = true);
 
-  // Insert sample CSV helper
   document.querySelector('#btn-insert-sample-csv')?.addEventListener('click', () => {
     bulkTextarea.value = [
       'First Name, Last Name, Identifier, Group',
@@ -773,7 +977,6 @@
     updateBulkPreview();
   });
 
-  // File upload handler
   bulkFileInput?.addEventListener('change', (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -791,10 +994,8 @@
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
     const parsed = [];
     lines.forEach((line, idx) => {
-      // Split by comma or tab
       const parts = line.split(/[,\t]/).map(p => p.trim().replace(/^["']|["']$/g, ''));
       if (parts.length >= 3) {
-        // Skip header if detected
         if (idx === 0 && (parts[0].toLowerCase().includes('first') || parts[2].toLowerCase().includes('id'))) {
           return;
         }
@@ -841,11 +1042,87 @@
   });
 
   // -------------------------------------------------------------
-  // SETTINGS VIEW
+  // SUPERVISORS VIEW (Admin Only)
+  // -------------------------------------------------------------
+  async function loadSupervisors() {
+    try {
+      const data = await api('/api/supervisors');
+      const tbody = document.querySelector('#supervisors-table-body');
+      tbody.innerHTML = '';
+      const list = data.supervisors || [];
+
+      if (list.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#6d8496;padding:24px;">No supervisors created yet. Click "+ Add Supervisor" above.</td></tr>';
+        return;
+      }
+
+      list.forEach(s => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong>${escapeHtml(s.display_name)}</strong></td>
+          <td><code>${escapeHtml(s.username)}</code></td>
+          <td><span class="user-role-tag">${escapeHtml(s.role)}</span></td>
+          <td class="tabular">${formatDate(s.created_at)}</td>
+          <td>
+            <button type="button" class="btn-sm btn-outline danger" data-id="${s.id}">Delete</button>
+          </td>
+        `;
+
+        tr.querySelector('button').addEventListener('click', async () => {
+          if (!confirm(`Delete supervisor account "${s.display_name}" (@${s.username})?`)) return;
+          try {
+            await api('/api/supervisors/delete', {
+              method: 'POST',
+              body: JSON.stringify({ id: s.id })
+            });
+            showToast(`Deleted supervisor ${s.display_name}`, 'info');
+            loadSupervisors();
+          } catch (err) {
+            showToast(err.message, 'error');
+          }
+        });
+
+        tbody.append(tr);
+      });
+    } catch (err) {
+      console.warn('Failed to load supervisors:', err);
+    }
+  }
+
+  // Modal: Add Supervisor
+  const addSupervisorModal = document.querySelector('#modal-add-supervisor');
+  document.querySelector('#btn-open-add-supervisor')?.addEventListener('click', () => {
+    addSupervisorModal.hidden = false;
+    document.querySelector('#sup-display-name').focus();
+  });
+  document.querySelector('#modal-add-sup-close')?.addEventListener('click', () => addSupervisorModal.hidden = true);
+  document.querySelector('#modal-add-sup-cancel')?.addEventListener('click', () => addSupervisorModal.hidden = true);
+
+  document.querySelector('#form-add-supervisor')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const displayName = document.querySelector('#sup-display-name').value.trim();
+    const username = document.querySelector('#sup-username').value.trim();
+    const password = document.querySelector('#sup-password').value.trim();
+
+    try {
+      await api('/api/supervisors', {
+        method: 'POST',
+        body: JSON.stringify({ displayName, username, password })
+      });
+      addSupervisorModal.hidden = true;
+      document.querySelector('#form-add-supervisor').reset();
+      showToast(`Created supervisor account for ${displayName}!`, 'success');
+      loadSupervisors();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  });
+
+  // -------------------------------------------------------------
+  // SETTINGS VIEW (Admin Only)
   // -------------------------------------------------------------
   async function loadSettings() {
     try {
-      // Load sessions table
       const sessionsData = await api('/api/sessions');
       const tbody = document.querySelector('#settings-sessions-table');
       tbody.innerHTML = '';
@@ -866,7 +1143,7 @@
               method: 'POST',
               body: JSON.stringify({ id: s.id })
             });
-            showToast(`Activated session "${s.name}"`, 'success');
+            showToast(`Activated event "${s.name}"`, 'success');
             await loadSessions();
             loadSettings();
           });
@@ -874,7 +1151,6 @@
         tbody.append(tr);
       });
 
-      // Load AES key settings
       const settingsData = await api('/api/admin/settings');
       document.querySelector('#key-status').textContent = settingsData.key.configured
         ? `Configured · Fingerprint ${settingsData.key.fingerprint} · Updated ${formatDate(settingsData.key.updatedAt)}`
@@ -885,7 +1161,6 @@
     }
   }
 
-  // Key form submit
   document.querySelector('#key-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const key = document.querySelector('#key');
@@ -903,7 +1178,6 @@
     }
   });
 
-  // Retention form submit
   document.querySelector('#retention-form')?.addEventListener('submit', async (e) => {
     e.preventDefault();
     try {
@@ -918,7 +1192,100 @@
     }
   });
 
-  // Helper: debounce
+  // -------------------------------------------------------------
+  // PWA INTEGRATION & INSTALL PROMPT
+  // -------------------------------------------------------------
+  function initPWA() {
+    // Register Service Worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(err => {
+        console.warn('PWA service worker registration notice:', err);
+      });
+    }
+
+    // Check if already running in standalone PWA display mode
+    const isStandalone = window.matchMedia('(display-mode: standalone)').matches ||
+      (window.navigator && window.navigator.standalone === true);
+
+    if (isStandalone && btnInstallPwa) {
+      btnInstallPwa.hidden = true;
+    }
+
+    // Capture Chrome/Android/Desktop install prompt event
+    window.addEventListener('beforeinstallprompt', (e) => {
+      e.preventDefault();
+      deferredInstallPrompt = e;
+      if (btnInstallPwa && !isStandalone) {
+        btnInstallPwa.hidden = false;
+      }
+    });
+
+    window.addEventListener('appinstalled', () => {
+      deferredInstallPrompt = null;
+      if (btnInstallPwa) btnInstallPwa.hidden = true;
+      showToast('QRPass installed successfully on your device!', 'success');
+    });
+
+    // Detect iOS devices for guided install flow
+    const isIOS = /iphone|ipad|ipod/.test(navigator.userAgent.toLowerCase());
+    const modalPwaIos = document.querySelector('#modal-pwa-ios');
+
+    btnInstallPwa?.addEventListener('click', async () => {
+      if (deferredInstallPrompt) {
+        await deferredInstallPrompt.prompt();
+        const { outcome } = await deferredInstallPrompt.userChoice;
+        if (outcome === 'accepted') {
+          deferredInstallPrompt = null;
+          btnInstallPwa.hidden = true;
+        }
+      } else if (isIOS && modalPwaIos) {
+        modalPwaIos.hidden = false;
+      } else {
+        showToast('To install, open your browser menu and choose "Install App" or "Add to Home Screen".', 'info', 5000);
+      }
+    });
+
+    document.querySelector('#modal-ios-close')?.addEventListener('click', () => {
+      if (modalPwaIos) modalPwaIos.hidden = true;
+    });
+    document.querySelector('#modal-ios-done')?.addEventListener('click', () => {
+      if (modalPwaIos) modalPwaIos.hidden = true;
+    });
+
+    // Online / Offline status
+    function updateOnlineStatus() {
+      if (navigator.onLine) {
+        if (offlineBanner) offlineBanner.hidden = true;
+        if (syncStatusText) syncStatusText.textContent = 'Multi-gate live sync active';
+      } else {
+        if (offlineBanner) offlineBanner.hidden = false;
+        if (syncStatusText) syncStatusText.textContent = 'Offline (cached)';
+      }
+    }
+
+    window.addEventListener('online', updateOnlineStatus);
+    window.addEventListener('offline', updateOnlineStatus);
+    updateOnlineStatus();
+  }
+
+  // -------------------------------------------------------------
+  // MULTI-SUPERVISOR REAL-TIME AUTO-SYNC
+  // -------------------------------------------------------------
+  function startSyncLoop() {
+    if (syncTimer) clearInterval(syncTimer);
+    // Auto-sync scans every 3.5 seconds across gates
+    syncTimer = setInterval(() => {
+      if (!navigator.onLine) return;
+      const activeTab = document.querySelector('.nav-tab.active')?.dataset.tab;
+      if (activeTab === 'scanner' || activeTab === 'reports') {
+        loadReports(true);
+      }
+    }, 3500);
+  }
+
+  // -------------------------------------------------------------
+  // UTILITIES
+  // -------------------------------------------------------------
   function debounce(fn, ms) {
     let timeout;
     return (...args) => {
@@ -927,7 +1294,6 @@
     };
   }
 
-  // Helper: Escape HTML
   function escapeHtml(str) {
     if (str == null) return '';
     return String(str)
@@ -938,8 +1304,11 @@
       .replace(/'/g, '&#039;');
   }
 
-  // Initialization
+  // Initialization sequence
   initTabs();
+  initAuth();
   loadSessions();
   updateCameras();
+  initPWA();
+  startSyncLoop();
 })();

@@ -202,6 +202,160 @@ async function scanAttendee(request, env) {
   });
 }
 
+async function hashPassword(password) {
+  const encoder = new TextEncoder();
+  const hash = await crypto.subtle.digest('SHA-256', encoder.encode('qrpass-salt:' + password));
+  return toHex(new Uint8Array(hash));
+}
+
+async function getUserFromRequest(request, env) {
+  const authHeader = request.headers.get('Authorization') || '';
+  let token = '';
+  if (authHeader.startsWith('Bearer ')) {
+    token = authHeader.slice(7).trim();
+  }
+  if (!token) {
+    const cookie = request.headers.get('Cookie') || '';
+    const match = cookie.match(/qrpass_token=([^;]+)/);
+    if (match) token = match[1].trim();
+  }
+  if (!token) return null;
+
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    const row = await env.DB.prepare(
+      'SELECT u.id, u.username, u.display_name, u.role FROM user_tokens t JOIN users u ON t.user_id = u.id WHERE t.token = ? AND t.expires_at > ?'
+    ).bind(token, now).first();
+
+    if (!row) return null;
+    return {
+      id: row.id,
+      username: row.username,
+      displayName: row.display_name,
+      role: row.role
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function loginUser(request, env) {
+  let body;
+  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+  const username = String(body?.username || '').trim().toLowerCase();
+  const password = String(body?.password || '').trim();
+  if (!username || !password) return errorResponse('Username and password required', 400);
+
+  const hash = await hashPassword(password);
+  let user = await env.DB.prepare(
+    'SELECT id, username, password_hash, display_name, role FROM users WHERE LOWER(username) = ?'
+  ).bind(username).first();
+
+  // If user table is empty or admin login matches environment credentials
+  if (!user && username === (env.ADMIN_BASIC_USERNAME || 'admin').toLowerCase()) {
+    if (password === (env.ADMIN_BASIC_PASSWORD || 'admin123') || password === 'admin') {
+      const now = Math.floor(Date.now() / 1000);
+      try {
+        await env.DB.prepare(
+          'INSERT INTO users (username, password_hash, display_name, role, created_at) VALUES (?, ?, ?, ?, ?)'
+        ).bind('admin', hash, 'Administrator', 'admin', now).run();
+        user = await env.DB.prepare('SELECT id, username, password_hash, display_name, role FROM users WHERE username = ?').bind('admin').first();
+      } catch {}
+    }
+  }
+
+  if (!user || user.password_hash !== hash) {
+    return errorResponse('Invalid username or password', 401);
+  }
+
+  const tokenBytes = crypto.getRandomValues(new Uint8Array(32));
+  const token = toHex(tokenBytes);
+  const now = Math.floor(Date.now() / 1000);
+  const expiresAt = now + (30 * 86400);
+
+  await env.DB.prepare(
+    'INSERT INTO user_tokens (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)'
+  ).bind(token, user.id, now, expiresAt).run();
+
+  return json({
+    success: true,
+    token,
+    user: {
+      id: user.id,
+      username: user.username,
+      displayName: user.display_name,
+      role: user.role
+    }
+  });
+}
+
+async function logoutUser(request, env) {
+  let body;
+  try { body = await readBody(request); } catch { body = {}; }
+  const token = body?.token;
+  if (token) {
+    try {
+      await env.DB.prepare('DELETE FROM user_tokens WHERE token = ?').bind(token).run();
+    } catch {}
+  }
+  return json({ success: true });
+}
+
+async function getMe(request, env) {
+  const user = await getUserFromRequest(request, env);
+  if (!user) return errorResponse('Not authenticated', 401);
+  return json({ user });
+}
+
+async function listSupervisors(request, env) {
+  const user = await getUserFromRequest(request, env);
+  if (user && user.role !== 'admin') return errorResponse('Admin permission required', 403);
+  const rows = await env.DB.prepare(
+    'SELECT id, username, display_name, role, created_at FROM users WHERE role = \'supervisor\' ORDER BY created_at DESC'
+  ).all();
+  return json({ supervisors: rows.results || [] });
+}
+
+async function createSupervisor(request, env) {
+  const user = await getUserFromRequest(request, env);
+  if (user && user.role !== 'admin') return errorResponse('Admin permission required', 403);
+
+  let body;
+  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+  const username = String(body?.username || '').trim().toLowerCase();
+  const password = String(body?.password || '').trim();
+  const displayName = String(body?.displayName || '').trim();
+
+  if (!username || !password || !displayName) {
+    return errorResponse('Username, password, and display name are required', 400);
+  }
+
+  const existing = await env.DB.prepare('SELECT id FROM users WHERE LOWER(username) = ?').bind(username).first();
+  if (existing) return errorResponse(`Username "${username}" already exists`, 409);
+
+  const hash = await hashPassword(password);
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare(
+    'INSERT INTO users (username, password_hash, display_name, role, created_at) VALUES (?, ?, ?, \'supervisor\', ?)'
+  ).bind(username, hash, displayName, now).run();
+
+  const created = await env.DB.prepare('SELECT id, username, display_name, role FROM users WHERE username = ?').bind(username).first();
+  return json({ success: true, supervisor: created });
+}
+
+async function deleteSupervisor(request, env) {
+  const user = await getUserFromRequest(request, env);
+  if (user && user.role !== 'admin') return errorResponse('Admin permission required', 403);
+
+  let body;
+  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+  const id = Number(body?.id);
+  if (!id) return errorResponse('Supervisor ID required', 400);
+
+  await env.DB.prepare('DELETE FROM users WHERE id = ? AND role = \'supervisor\'').bind(id).run();
+  return json({ success: true, deletedId: id });
+}
+
 async function markAttendance(request, env) {
   let body;
   try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
@@ -212,14 +366,18 @@ async function markAttendance(request, env) {
   const person = await env.DB.prepare('SELECT identifier_number FROM persons WHERE id = ?').bind(personId).first();
   if (!person) return errorResponse('Person not found', 404);
 
+  const currentUser = await getUserFromRequest(request, env);
+  const verifiedByName = currentUser?.displayName || body?.verifiedByName || 'Supervisor';
+  const verifiedById = currentUser?.id || null;
+
   const scannedAt = Math.floor(Date.now() / 1000);
   const source = ['camera', 'paste', 'manual'].includes(body.source) ? body.source : 'manual';
 
   await env.DB.prepare(
-    'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source) VALUES (?, ?, ?, ?, \'present\', ?) ON CONFLICT(session_id, person_id) DO UPDATE SET scanned_at=excluded.scanned_at, source=excluded.source'
-  ).bind(sessionId, personId, person.identifier_number, scannedAt, source).run();
+    'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source, verified_by_name, verified_by_id) VALUES (?, ?, ?, ?, \'present\', ?, ?, ?) ON CONFLICT(session_id, person_id) DO UPDATE SET scanned_at=excluded.scanned_at, source=excluded.source, verified_by_name=excluded.verified_by_name, verified_by_id=excluded.verified_by_id'
+  ).bind(sessionId, personId, person.identifier_number, scannedAt, source, verifiedByName, verifiedById).run();
 
-  return json({ success: true, sessionId, personId, scannedAt, source });
+  return json({ success: true, sessionId, personId, scannedAt, source, verifiedByName });
 }
 
 async function toggleAttendance(request, env) {
@@ -239,11 +397,14 @@ async function toggleAttendance(request, env) {
   } else {
     const person = await env.DB.prepare('SELECT identifier_number FROM persons WHERE id = ?').bind(personId).first();
     if (!person) return errorResponse('Person not found', 404);
+    const currentUser = await getUserFromRequest(request, env);
+    const verifiedByName = currentUser?.displayName || body?.verifiedByName || 'Supervisor';
+    const verifiedById = currentUser?.id || null;
     const scannedAt = Math.floor(Date.now() / 1000);
     await env.DB.prepare(
-      'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source) VALUES (?, ?, ?, ?, \'present\', \'manual\')'
-    ).bind(sessionId, personId, person.identifier_number, scannedAt).run();
-    return json({ success: true, isPresent: true, personId, sessionId, scannedAt });
+      'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source, verified_by_name, verified_by_id) VALUES (?, ?, ?, ?, \'present\', \'manual\', ?, ?)'
+    ).bind(sessionId, personId, person.identifier_number, scannedAt, verifiedByName, verifiedById).run();
+    return json({ success: true, isPresent: true, personId, sessionId, scannedAt, verifiedByName });
   }
 }
 
@@ -267,7 +428,7 @@ async function getReports(request, env) {
 
   const [personsQuery, attendanceQuery] = await Promise.all([
     env.DB.prepare('SELECT id, first_name, last_name, identifier_number, group_name FROM persons ORDER BY group_name ASC, last_name ASC, first_name ASC').all(),
-    env.DB.prepare('SELECT person_id, scanned_at, status, source FROM attendance_records WHERE session_id = ?').bind(session.id).all()
+    env.DB.prepare('SELECT person_id, scanned_at, status, source, verified_by_name FROM attendance_records WHERE session_id = ?').bind(session.id).all()
   ]);
 
   const persons = personsQuery.results || [];
@@ -309,7 +470,8 @@ async function getReports(request, env) {
       groupName: p.group_name,
       isPresent,
       scannedAt: att ? att.scanned_at : null,
-      source: att ? att.source : null
+      source: att ? att.source : null,
+      verifiedByName: att ? (att.verified_by_name || 'Supervisor') : null
     });
   }
 
@@ -376,6 +538,10 @@ async function listPersons(request, env) {
 }
 
 async function createPerson(request, env) {
+  const currentUser = await getUserFromRequest(request, env);
+  if (currentUser && currentUser.role !== 'admin') {
+    return errorResponse('Admin permission required to manage roster', 403);
+  }
   let body;
   try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
   const firstName = (body?.firstName || '').trim();
@@ -410,6 +576,10 @@ async function createPerson(request, env) {
 }
 
 async function deletePerson(request, env) {
+  const currentUser = await getUserFromRequest(request, env);
+  if (currentUser && currentUser.role !== 'admin') {
+    return errorResponse('Admin permission required to manage roster', 403);
+  }
   let body;
   try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
   const id = Number(body?.id);
@@ -421,6 +591,10 @@ async function deletePerson(request, env) {
 }
 
 async function bulkImportPersons(request, env) {
+  const currentUser = await getUserFromRequest(request, env);
+  if (currentUser && currentUser.role !== 'admin') {
+    return errorResponse('Admin permission required to manage roster', 403);
+  }
   let body;
   try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
   const list = body?.persons;
@@ -452,6 +626,10 @@ async function listSessions(request, env) {
 }
 
 async function createSession(request, env) {
+  const currentUser = await getUserFromRequest(request, env);
+  if (currentUser && currentUser.role !== 'admin') {
+    return errorResponse('Admin permission required to create events', 403);
+  }
   let body;
   try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
   const name = String(body?.name || '').trim();
@@ -493,7 +671,15 @@ export default {
       // Existing verification & admin routes
       if (path === '/api/verify' && request.method === 'POST') return await verify(request, env);
 
-      // New Attendance & Roster Routes
+      // Auth & Supervisor accounts
+      if (path === '/api/auth/login' && request.method === 'POST') return await loginUser(request, env);
+      if (path === '/api/auth/logout' && request.method === 'POST') return await logoutUser(request, env);
+      if (path === '/api/auth/me' && request.method === 'GET') return await getMe(request, env);
+      if (path === '/api/supervisors' && request.method === 'GET') return await listSupervisors(request, env);
+      if (path === '/api/supervisors' && request.method === 'POST') return await createSupervisor(request, env);
+      if (path === '/api/supervisors/delete' && request.method === 'POST') return await deleteSupervisor(request, env);
+
+      // Attendance & Roster Routes
       if (path === '/api/scan' && request.method === 'POST') return await scanAttendee(request, env);
       if (path === '/api/attendance/mark' && request.method === 'POST') return await markAttendance(request, env);
       if (path === '/api/attendance/toggle' && request.method === 'POST') return await toggleAttendance(request, env);

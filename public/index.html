@@ -2,12 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="theme-color" content="#12243a">
-  <title>QR Attendance & Badge Verifier</title>
-  <meta name="description" content="QR attendance check-in, identifier lookup, group reporting, and roster management.">
-  <meta property="og:title" content="QR Attendance & Badge Verifier">
-  <meta property="og:description" content="QR attendance check-in, identifier lookup, group reporting, and roster management.">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="QRPass">
+  <title>QRPass — Mobile QR Attendance &amp; Badge Verifier</title>
+  <meta name="description" content="Mobile-first QR attendance verification and live reporting for event supervisors and administrators.">
+  <meta property="og:title" content="QRPass — Mobile QR Attendance &amp; Badge Verifier">
+  <meta property="og:description" content="Mobile-first QR attendance verification and live reporting for event supervisors and administrators.">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
   <link rel="stylesheet" href="/style.css">
   <script src="/vendor/jsQR.js" defer></script>
   <script src="/sounds.js" defer></script>
@@ -17,42 +24,88 @@
   <header>
     <div class="shell">
       <div class="heading">
-        <div>
-          <span class="eyebrow">ATTENDANCE & BADGE VERIFIER</span>
-          <h1>QR Attendance</h1>
-          <p>Scan badges, verify identifiers, and track real-time group attendance.</p>
+        <div class="brand-lockup">
+          <svg class="brand-logo-svg" viewBox="0 0 200 200" aria-hidden="true">
+            <defs>
+              <path id="star-arm" d="M -11, -30 L -17, -90 A 5 5 0 0 1 -12, -95 L 12, -95 A 5 5 0 0 1 17, -90 L 11, -30 A 4 4 0 0 1 7, -26 L -7, -26 A 4 4 0 0 1 -11, -30 Z" fill="#FF662A" />
+            </defs>
+            <g transform="translate(100, 100)">
+              <use href="#star-arm" />
+              <use href="#star-arm" transform="rotate(72)" />
+              <use href="#star-arm" transform="rotate(144)" />
+              <use href="#star-arm" transform="rotate(216)" />
+              <use href="#star-arm" transform="rotate(288)" />
+            </g>
+          </svg>
+          <div class="brand-text">
+            <h1>QRPass</h1>
+            <p>Live attendance verification &amp; reporting</p>
+          </div>
         </div>
-        <div class="session-selector-bar">
-          <label for="session-select" style="margin:0;font-size:13px;color:#c4d3e3;">Session:</label>
-          <select id="session-select" aria-label="Active attendance session"></select>
-          <button id="btn-open-session-modal" type="button" class="btn-sm btn-outline">+ New</button>
+
+        <div class="header-actions">
+          <!-- In-App PWA Install Button -->
+          <button id="btn-install-pwa" type="button" class="pwa-install-btn" title="Install QRPass on your phone">
+            <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" viewBox="0 0 24 24" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            <span>Install App</span>
+          </button>
+
+          <!-- Current Logged In User Chip -->
+          <div id="user-badge-container" class="user-info-badge">
+            <span id="user-display-name">Supervisor</span>
+            <span id="user-role-badge" class="user-role-tag">SUPERVISOR</span>
+            <button id="btn-switch-user" type="button" class="btn-sm btn-outline" style="padding:2px 7px;font-size:11px;border-color:rgba(255,255,255,0.25);color:#fff;" title="Switch or logout user">Switch</button>
+          </div>
+
+          <!-- Session Selector -->
+          <div class="session-selector-bar">
+            <label for="session-select" style="margin:0;font-size:12px;color:#c4d3e3;">Event:</label>
+            <select id="session-select" aria-label="Active attendance session"></select>
+            <button id="btn-open-session-modal" type="button" class="btn-sm btn-outline" title="Create new session">+ New</button>
+          </div>
         </div>
       </div>
+
+      <!-- Navigation Tabs (Filtered dynamically based on role) -->
       <nav class="nav-tabs" role="tablist">
         <button id="tab-btn-scanner" class="nav-tab active" type="button" role="tab" aria-selected="true" data-tab="scanner">Scanner</button>
         <button id="tab-btn-reports" class="nav-tab" type="button" role="tab" aria-selected="false" data-tab="reports">Reports</button>
-        <button id="tab-btn-roster" class="nav-tab" type="button" role="tab" aria-selected="false" data-tab="roster">Roster</button>
-        <button id="tab-btn-settings" class="nav-tab" type="button" role="tab" aria-selected="false" data-tab="settings">Settings</button>
+        <button id="tab-btn-roster" class="nav-tab admin-only" type="button" role="tab" aria-selected="false" data-tab="roster">Roster</button>
+        <button id="tab-btn-supervisors" class="nav-tab admin-only" type="button" role="tab" aria-selected="false" data-tab="supervisors">Supervisors</button>
+        <button id="tab-btn-settings" class="nav-tab admin-only" type="button" role="tab" aria-selected="false" data-tab="settings">Settings</button>
       </nav>
     </div>
   </header>
 
   <main class="shell">
     <div id="toast-container"></div>
+    <div id="offline-banner" class="offline-indicator" hidden>
+      <span class="offline-dot"></span>
+      <span>Offline mode active — local scans will sync when connection returns.</span>
+    </div>
 
     <!-- TAB 1: SCANNER VIEW -->
     <section id="view-scanner">
       <div class="card">
         <div class="card-header">
-          <h2>Badge Camera Scanner</h2>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+            <h2>Camera Scanner</h2>
+            <div id="sync-status-badge" class="sync-indicator">
+              <span class="pulse-dot"></span>
+              <span id="sync-status-text">Multi-gate live sync active</span>
+            </div>
+          </div>
           <label class="sound-choice">
             <input id="sound-enabled" type="checkbox" checked>
-            Play result audio
+            Play audio
           </label>
         </div>
 
         <div id="scanner" class="scanner">
           <video id="video" playsinline muted aria-label="Camera preview"></video>
+          <div class="scan-reticle" id="scan-reticle" hidden></div>
           <div class="camera-empty" id="camera-empty">
             <div class="scan-icon" aria-hidden="true">▣</div>
             <p>Camera is off</p>
@@ -61,32 +114,36 @@
 
         <div class="controls">
           <button id="start" type="button">Start camera</button>
+          <button id="stop" type="button" class="btn-stop" hidden>Stop camera</button>
           <button id="again" type="button" hidden>Scan again</button>
           <label id="camera-label" hidden style="margin:0;display:inline-flex;align-items:center;gap:6px;">
             Camera <select id="cameras"></select>
           </label>
         </div>
-        <p class="hint" id="camera-status" role="status">Point camera at an attendee's QR badge. Works with plain identifier numbers or encrypted badges.</p>
+        <p class="hint" id="camera-status" role="status">Point camera at an attendee's QR badge. Supports plain identifiers (e.g. 104829) or encrypted badges.</p>
       </div>
 
       <!-- Quick Lookup / Paste Card -->
       <div class="card">
-        <h2>Manual Lookup & Paste</h2>
-        <p class="small">Enter an attendee identifier number (e.g. <code>1234</code>, <code>104829</code>) or paste an 84-hex QR payload.</p>
+        <h2>Manual Lookup &amp; Keypad</h2>
+        <p class="small">Enter an attendee identifier number or paste an encrypted badge payload.</p>
         <form id="paste-form">
-          <textarea id="hex" rows="2" spellcheck="false" autocomplete="off" placeholder="Enter identifier number (e.g. 104829) or 84-hex badge payload"></textarea>
+          <textarea id="hex" rows="2" spellcheck="false" autocomplete="off" placeholder="Enter identifier number (e.g. 104829) or paste QR code data"></textarea>
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
             <button type="submit">Look up attendee</button>
-            <span class="small">Sample IDs: <strong>1234</strong> (John Doe), <strong>104829</strong> (Maria Santos)</span>
+            <span class="small">Sample demo IDs: <strong>1234</strong> (John Doe), <strong>104829</strong> (Maria Santos)</span>
           </div>
         </form>
       </div>
 
-      <!-- Recent Check-ins Card -->
+      <!-- Recent Check-ins Card (Current Session) -->
       <div class="card">
         <div class="card-header">
-          <h2>Recent Check-ins (Current Session)</h2>
-          <span id="recent-count" class="small">0 attendees checked in</span>
+          <div>
+            <h2>Recent Check-ins (Current Event)</h2>
+            <p class="small" style="margin:3px 0 0;">Synchronized live across all active supervisor devices.</p>
+          </div>
+          <span id="recent-count" class="small" style="font-weight:600;">0 attendees checked in</span>
         </div>
         <div class="table-scroll">
           <table>
@@ -96,12 +153,13 @@
                 <th>Identifier</th>
                 <th>Group</th>
                 <th>Check-in Time</th>
+                <th>Verified By</th>
                 <th>Status</th>
               </tr>
             </thead>
             <tbody id="recent-table-body">
               <tr>
-                <td colspan="5" style="text-align:center;color:#6d8496;padding:24px;">No check-ins logged yet in this session. Start scanning above!</td>
+                <td colspan="6" style="text-align:center;color:#6d8496;padding:24px;">No check-ins logged yet in this session. Start scanning above!</td>
               </tr>
             </tbody>
           </table>
@@ -117,7 +175,7 @@
             <h2 id="report-session-title">Attendance Overview</h2>
             <p id="report-last-updated" class="small" style="margin:4px 0 0;">Updated just now</p>
           </div>
-          <div style="display:flex;gap:10px;">
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
             <button id="btn-refresh-report" type="button" class="btn-secondary btn-sm">Refresh</button>
             <button id="btn-export-csv" type="button" class="btn-sm">Export CSV</button>
           </div>
@@ -166,7 +224,7 @@
           </div>
         </div>
 
-        <!-- Group Attendees Table -->
+        <!-- Group Attendees Table with Verified By column -->
         <div class="table-scroll">
           <table>
             <thead>
@@ -176,6 +234,7 @@
                 <th>Group</th>
                 <th>Status</th>
                 <th>Check-in Time</th>
+                <th>Verified By</th>
                 <th>Action</th>
               </tr>
             </thead>
@@ -187,7 +246,7 @@
       </div>
     </section>
 
-    <!-- TAB 3: ROSTER VIEW -->
+    <!-- TAB 3: ROSTER VIEW (Admin Only) -->
     <section id="view-roster" hidden>
       <div class="card">
         <div class="card-header">
@@ -195,7 +254,7 @@
             <h2>Attendee Directory</h2>
             <p class="small" style="margin:4px 0 0;">Manage enrolled persons and bulk import roster data via CSV.</p>
           </div>
-          <div style="display:flex;gap:10px;">
+          <div style="display:flex;gap:10px;flex-wrap:wrap;">
             <button id="btn-open-add-person" type="button">+ Add Person</button>
             <button id="btn-open-bulk-import" type="button" class="btn-secondary">Bulk Import (CSV)</button>
           </div>
@@ -226,11 +285,41 @@
       </div>
     </section>
 
-    <!-- TAB 4: SETTINGS VIEW -->
+    <!-- TAB 4: SUPERVISORS VIEW (Admin Only) -->
+    <section id="view-supervisors" hidden>
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2>Supervisor Accounts</h2>
+            <p class="small" style="margin:4px 0 0;">Create individual logins for supervisors and operators scanning across different entry gates.</p>
+          </div>
+          <button id="btn-open-add-supervisor" type="button">+ Add Supervisor</button>
+        </div>
+
+        <div class="table-scroll" style="margin-top:14px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Display Name</th>
+                <th>Username</th>
+                <th>Role</th>
+                <th>Created</th>
+                <th style="width:90px;">Action</th>
+              </tr>
+            </thead>
+            <tbody id="supervisors-table-body">
+              <!-- Populated by JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 5: SETTINGS VIEW (Admin Only) -->
     <section id="view-settings" hidden>
       <div class="card">
-        <h2>Session Management</h2>
-        <p class="small">Create new attendance sessions (e.g. "Orientation Day 2", "Workshop Afternoon") and switch the active event.</p>
+        <h2>Session &amp; Event Management</h2>
+        <p class="small">Create new attendance sessions (e.g. "Orientation Day 2", "Workshop Afternoon") and switch active events.</p>
         <div class="table-scroll" style="margin-top:14px;">
           <table>
             <thead>
@@ -274,7 +363,7 @@
   <div id="modal-confirm" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="modal-person-name">
     <div class="modal-content">
       <div class="modal-header">
-        <span class="eyebrow" style="color:#126e62;margin:0;">CONFIRM ATTENDANCE</span>
+        <span class="eyebrow" style="color:#126e62;margin:0;font-weight:700;">CONFIRM ATTENDANCE</span>
         <button id="modal-close-btn" class="modal-close" type="button" aria-label="Close dialog">×</button>
       </div>
 
@@ -287,6 +376,9 @@
         <div id="modal-badge-container">
           <span id="modal-status-badge" class="attendee-status-badge new">Not yet checked in</span>
         </div>
+        <div class="verifier-stamp" id="modal-verifier-stamp">
+          Verifying as: <strong id="modal-verifier-name">Supervisor Alex</strong>
+        </div>
         <p id="modal-time-info" class="small" style="margin-top:8px;"></p>
       </div>
 
@@ -294,6 +386,66 @@
         <button id="modal-cancel-btn" type="button" class="btn-secondary">Close (Esc)</button>
         <button id="modal-confirm-btn" type="button" class="btn-full" style="flex:2;">Mark Present (Enter)</button>
       </div>
+    </div>
+  </div>
+
+  <!-- MODAL: LOGIN / SWITCH USER -->
+  <div id="modal-login" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="modal-login-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modal-login-title">Sign In to QRPass</h2>
+        <button id="modal-login-close" class="modal-close" type="button" aria-label="Close dialog">×</button>
+      </div>
+      <p class="small" style="margin-top:0;">Sign in with your supervisor or administrator account to record check-ins with your name.</p>
+      
+      <form id="form-login">
+        <label for="login-username">Username</label>
+        <input id="login-username" type="text" required placeholder="e.g. supervisor1 or admin" autocomplete="username" style="width:100%;">
+
+        <label for="login-password">Password</label>
+        <input id="login-password" type="password" required placeholder="Enter your password" autocomplete="current-password" style="width:100%;">
+
+        <div class="modal-actions" style="margin-top:16px;">
+          <button id="modal-login-cancel" type="button" class="btn-secondary">Cancel</button>
+          <button type="submit" style="flex:1;">Sign In</button>
+        </div>
+      </form>
+
+      <div class="demo-login-box">
+        <strong>Quick Sign-in (Demo Accounts):</strong>
+        <div class="demo-login-btns">
+          <button id="btn-quick-login-sup1" type="button" class="btn-sm btn-outline">⚡ Alex (Supervisor)</button>
+          <button id="btn-quick-login-sup2" type="button" class="btn-sm btn-outline">⚡ Jordan (Supervisor)</button>
+          <button id="btn-quick-login-admin" type="button" class="btn-sm btn-outline">🔑 Administrator</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- MODAL: ADD SUPERVISOR (Admin Only) -->
+  <div id="modal-add-supervisor" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="modal-add-sup-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modal-add-sup-title">Create Supervisor Account</h2>
+        <button id="modal-add-sup-close" class="modal-close" type="button" aria-label="Close dialog">×</button>
+      </div>
+      <form id="form-add-supervisor">
+        <label for="sup-display-name">Full / Display Name</label>
+        <input id="sup-display-name" type="text" required placeholder="e.g. Supervisor Taylor" style="width:100%;">
+
+        <label for="sup-username">Username</label>
+        <input id="sup-username" type="text" required placeholder="e.g. supervisor3" autocomplete="off" style="width:100%;">
+
+        <label for="sup-password">Password</label>
+        <input id="sup-password" type="password" required placeholder="Enter strong password" autocomplete="new-password" style="width:100%;">
+
+        <p class="small">Supervisors have permission to scan badges, mark attendance, and view real-time reports.</p>
+
+        <div class="modal-actions">
+          <button id="modal-add-sup-cancel" type="button" class="btn-secondary">Cancel</button>
+          <button type="submit">Create Account</button>
+        </div>
+      </form>
     </div>
   </div>
 
@@ -369,14 +521,37 @@
         <p class="small">The new session will immediately become the active attendance event.</p>
         <div class="modal-actions">
           <button id="modal-session-cancel" type="button" class="btn-secondary">Cancel</button>
-          <button type="submit">Create & Activate</button>
+          <button type="submit">Create &amp; Activate</button>
         </div>
       </form>
     </div>
   </div>
 
+  <!-- MODAL: iOS SAFARI PWA INSTALL GUIDE -->
+  <div id="modal-pwa-ios" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="modal-ios-title">
+    <div class="modal-content" style="max-width:380px;">
+      <div class="modal-header">
+        <h2 id="modal-ios-title">Install QRPass on iOS</h2>
+        <button id="modal-ios-close" class="modal-close" type="button" aria-label="Close dialog">×</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;">
+        <img src="/apple-touch-icon.png" width="48" height="48" alt="QRPass Icon" style="border-radius:10px;">
+        <div>
+          <strong style="font-size:16px;">QRPass App</strong>
+          <p class="small" style="margin:2px 0 0;">Add to Home Screen for fast full-screen access</p>
+        </div>
+      </div>
+      <ol style="font-size:13px;line-height:1.7;padding-left:20px;margin:0 0 16px;color:#334d66;">
+        <li>Tap the <strong>Share</strong> button <span style="font-size:16px;">􀈂</span> in Safari toolbar at the bottom.</li>
+        <li>Scroll down the action sheet and tap <strong>Add to Home Screen</strong>.</li>
+        <li>Tap <strong>Add</strong> in the top-right corner.</li>
+      </ol>
+      <button id="modal-ios-done" type="button" class="btn-full">Got it</button>
+    </div>
+  </div>
+
   <footer class="shell">
-    QR Attendance & Badge Verifier · Powered by Cloudflare D1 and SQLite
+    QRPass · Secure Badge Verification &amp; Real-Time Attendance System
   </footer>
 </body>
 </html>
