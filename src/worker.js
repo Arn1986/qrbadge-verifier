@@ -356,6 +356,18 @@ async function deleteSupervisor(request, env) {
   return json({ success: true, deletedId: id });
 }
 
+let schemaVerified = false;
+async function ensureAttendanceSchema(env) {
+  if (schemaVerified) return;
+  try {
+    await env.DB.prepare('ALTER TABLE attendance_records ADD COLUMN verified_by_name TEXT').run();
+  } catch {}
+  try {
+    await env.DB.prepare('ALTER TABLE attendance_records ADD COLUMN verified_by_id INTEGER').run();
+  } catch {}
+  schemaVerified = true;
+}
+
 async function markAttendance(request, env) {
   let body;
   try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
@@ -373,9 +385,20 @@ async function markAttendance(request, env) {
   const scannedAt = Math.floor(Date.now() / 1000);
   const source = ['camera', 'paste', 'manual'].includes(body.source) ? body.source : 'manual';
 
-  await env.DB.prepare(
-    'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source, verified_by_name, verified_by_id) VALUES (?, ?, ?, ?, \'present\', ?, ?, ?) ON CONFLICT(session_id, person_id) DO UPDATE SET scanned_at=excluded.scanned_at, source=excluded.source, verified_by_name=excluded.verified_by_name, verified_by_id=excluded.verified_by_id'
-  ).bind(sessionId, personId, person.identifier_number, scannedAt, source, verifiedByName, verifiedById).run();
+  await ensureAttendanceSchema(env);
+  try {
+    await env.DB.prepare(
+      'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source, verified_by_name, verified_by_id) VALUES (?, ?, ?, ?, \'present\', ?, ?, ?) ON CONFLICT(session_id, person_id) DO UPDATE SET scanned_at=excluded.scanned_at, source=excluded.source, verified_by_name=excluded.verified_by_name, verified_by_id=excluded.verified_by_id'
+    ).bind(sessionId, personId, person.identifier_number, scannedAt, source, verifiedByName, verifiedById).run();
+  } catch (err) {
+    if (String(err?.message || '').includes('no such column')) {
+      await env.DB.prepare(
+        'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source) VALUES (?, ?, ?, ?, \'present\', ?) ON CONFLICT(session_id, person_id) DO UPDATE SET scanned_at=excluded.scanned_at, source=excluded.source'
+      ).bind(sessionId, personId, person.identifier_number, scannedAt, source).run();
+    } else {
+      throw err;
+    }
+  }
 
   return json({ success: true, sessionId, personId, scannedAt, source, verifiedByName });
 }
@@ -401,9 +424,22 @@ async function toggleAttendance(request, env) {
     const verifiedByName = currentUser?.displayName || body?.verifiedByName || 'Supervisor';
     const verifiedById = currentUser?.id || null;
     const scannedAt = Math.floor(Date.now() / 1000);
-    await env.DB.prepare(
-      'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source, verified_by_name, verified_by_id) VALUES (?, ?, ?, ?, \'present\', \'manual\', ?, ?)'
-    ).bind(sessionId, personId, person.identifier_number, scannedAt, verifiedByName, verifiedById).run();
+
+    await ensureAttendanceSchema(env);
+    try {
+      await env.DB.prepare(
+        'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source, verified_by_name, verified_by_id) VALUES (?, ?, ?, ?, \'present\', \'manual\', ?, ?)'
+      ).bind(sessionId, personId, person.identifier_number, scannedAt, verifiedByName, verifiedById).run();
+    } catch (err) {
+      if (String(err?.message || '').includes('no such column')) {
+        await env.DB.prepare(
+          'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source) VALUES (?, ?, ?, ?, \'present\', \'manual\')'
+        ).bind(sessionId, personId, person.identifier_number, scannedAt).run();
+      } else {
+        throw err;
+      }
+    }
+
     return json({ success: true, isPresent: true, personId, sessionId, scannedAt, verifiedByName });
   }
 }
@@ -426,14 +462,24 @@ async function getReports(request, env) {
     return json({ session: null, total: 0, present: 0, missing: 0, percent: 0, groups: [] });
   }
 
-  const [personsQuery, attendanceQuery] = await Promise.all([
-    env.DB.prepare('SELECT id, first_name, last_name, identifier_number, group_name FROM persons ORDER BY group_name ASC, last_name ASC, first_name ASC').all(),
-    env.DB.prepare('SELECT person_id, scanned_at, status, source, verified_by_name FROM attendance_records WHERE session_id = ?').bind(session.id).all()
-  ]);
+  await ensureAttendanceSchema(env);
+  let attendanceRows = [];
+  try {
+    const attendanceQuery = await env.DB.prepare('SELECT person_id, scanned_at, status, source, verified_by_name FROM attendance_records WHERE session_id = ?').bind(session.id).all();
+    attendanceRows = attendanceQuery.results || [];
+  } catch (err) {
+    if (String(err?.message || '').includes('no such column')) {
+      const fallbackQuery = await env.DB.prepare('SELECT person_id, scanned_at, status, source FROM attendance_records WHERE session_id = ?').bind(session.id).all();
+      attendanceRows = (fallbackQuery.results || []).map(r => ({ ...r, verified_by_name: 'Supervisor' }));
+    } else {
+      throw err;
+    }
+  }
 
+  const personsQuery = await env.DB.prepare('SELECT id, first_name, last_name, identifier_number, group_name FROM persons ORDER BY group_name ASC, last_name ASC, first_name ASC').all();
   const persons = personsQuery.results || [];
   const attendanceMap = new Map();
-  for (const rec of (attendanceQuery.results || [])) {
+  for (const rec of attendanceRows) {
     attendanceMap.set(rec.person_id, rec);
   }
 

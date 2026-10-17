@@ -64,10 +64,14 @@ const migration1 = fs.readFileSync(new URL('./migrations/0001_initial.sql', impo
 const migration2 = fs.readFileSync(new URL('./migrations/0002_rate_limit.sql', import.meta.url), 'utf8');
 const migration3 = fs.readFileSync(new URL('./migrations/0003_attendance.sql', import.meta.url), 'utf8');
 const migration4 = fs.readFileSync(new URL('./migrations/0004_supervisors_and_pwa.sql', import.meta.url), 'utf8');
+const migration5 = fs.readFileSync(new URL('./migrations/0005_add_verified_by_columns.sql', import.meta.url), 'utf8');
 sqlite.exec(migration1);
 sqlite.exec(migration2);
 sqlite.exec(migration3);
 sqlite.exec(migration4);
+try {
+  sqlite.exec(migration5);
+} catch {}
 
 // Safely ensure verified_by columns exist on attendance_records
 try {

@@ -30,8 +30,6 @@ CREATE TABLE IF NOT EXISTS attendance_records (
   scanned_at INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'present',
   source TEXT NOT NULL CHECK (source IN ('camera', 'paste', 'manual')),
-  verified_by_name TEXT,
-  verified_by_id INTEGER,
   FOREIGN KEY(session_id) REFERENCES sessions(id) ON DELETE CASCADE,
   FOREIGN KEY(person_id) REFERENCES persons(id) ON DELETE CASCADE,
   UNIQUE(session_id, person_id)

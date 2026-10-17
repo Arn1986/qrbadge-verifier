@@ -16,6 +16,3 @@ CREATE TABLE IF NOT EXISTS user_tokens (
   expires_at INTEGER NOT NULL,
   FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
 );
-
--- Add supervisor attribution columns to attendance records if not existing
--- (SQLite ignores duplicate column if handled safely or via conditional column check)
