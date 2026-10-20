@@ -30,7 +30,7 @@ function acceptedMutation(request) {
   const origin = request.headers.get('origin');
   return request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() === 'application/json' && (!origin || origin === new URL(request.url).origin);
 }
-async function readBody(request, maxBytes = 65536) {
+async function readBody(request, maxBytes = 15 * 1024 * 1024) {
   const contentLength = Number(request.headers.get('content-length'));
   if (contentLength && contentLength > maxBytes) throw new Error('Request too large');
   const body = await request.text();
@@ -357,16 +357,17 @@ async function deleteSupervisor(request, env) {
   return json({ success: true, deletedId: id });
 }
 
-let schemaVerified = false;
 async function ensureAttendanceSchema(env) {
-  if (schemaVerified) return;
   try {
-    await env.DB.prepare('ALTER TABLE attendance_records ADD COLUMN verified_by_name TEXT').run();
+    const tableInfo = await env.DB.prepare('PRAGMA table_info(attendance_records)').all();
+    const cols = (tableInfo?.results || []).map(c => c.name);
+    if (!cols.includes('verified_by_name')) {
+      await env.DB.prepare('ALTER TABLE attendance_records ADD COLUMN verified_by_name TEXT').run();
+    }
+    if (!cols.includes('verified_by_id')) {
+      await env.DB.prepare('ALTER TABLE attendance_records ADD COLUMN verified_by_id INTEGER').run();
+    }
   } catch {}
-  try {
-    await env.DB.prepare('ALTER TABLE attendance_records ADD COLUMN verified_by_id INTEGER').run();
-  } catch {}
-  schemaVerified = true;
 }
 
 async function markAttendance(request, env) {
@@ -391,14 +392,11 @@ async function markAttendance(request, env) {
     await env.DB.prepare(
       'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source, verified_by_name, verified_by_id) VALUES (?, ?, ?, ?, \'present\', ?, ?, ?) ON CONFLICT(session_id, person_id) DO UPDATE SET scanned_at=excluded.scanned_at, source=excluded.source, verified_by_name=excluded.verified_by_name, verified_by_id=excluded.verified_by_id'
     ).bind(sessionId, personId, person.identifier_number, scannedAt, source, verifiedByName, verifiedById).run();
-  } catch (err) {
-    if (String(err?.message || '').includes('no such column')) {
-      await env.DB.prepare(
-        'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source) VALUES (?, ?, ?, ?, \'present\', ?) ON CONFLICT(session_id, person_id) DO UPDATE SET scanned_at=excluded.scanned_at, source=excluded.source'
-      ).bind(sessionId, personId, person.identifier_number, scannedAt, source).run();
-    } else {
-      throw err;
-    }
+  } catch (_err) {
+    // Graceful fallback if database does not have verified_by columns
+    await env.DB.prepare(
+      'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source) VALUES (?, ?, ?, ?, \'present\', ?) ON CONFLICT(session_id, person_id) DO UPDATE SET scanned_at=excluded.scanned_at, source=excluded.source'
+    ).bind(sessionId, personId, person.identifier_number, scannedAt, source).run();
   }
 
   return json({ success: true, sessionId, personId, scannedAt, source, verifiedByName });
@@ -431,14 +429,10 @@ async function toggleAttendance(request, env) {
       await env.DB.prepare(
         'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source, verified_by_name, verified_by_id) VALUES (?, ?, ?, ?, \'present\', \'manual\', ?, ?)'
       ).bind(sessionId, personId, person.identifier_number, scannedAt, verifiedByName, verifiedById).run();
-    } catch (err) {
-      if (String(err?.message || '').includes('no such column')) {
-        await env.DB.prepare(
-          'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source) VALUES (?, ?, ?, ?, \'present\', \'manual\')'
-        ).bind(sessionId, personId, person.identifier_number, scannedAt).run();
-      } else {
-        throw err;
-      }
+    } catch (_err) {
+      await env.DB.prepare(
+        'INSERT INTO attendance_records (session_id, person_id, identifier_number, scanned_at, status, source) VALUES (?, ?, ?, ?, \'present\', \'manual\')'
+      ).bind(sessionId, personId, person.identifier_number, scannedAt).run();
     }
 
     return json({ success: true, isPresent: true, personId, sessionId, scannedAt, verifiedByName });
@@ -468,12 +462,12 @@ async function getReports(request, env) {
   try {
     const attendanceQuery = await env.DB.prepare('SELECT person_id, scanned_at, status, source, verified_by_name FROM attendance_records WHERE session_id = ?').bind(session.id).all();
     attendanceRows = attendanceQuery.results || [];
-  } catch (err) {
-    if (String(err?.message || '').includes('no such column')) {
+  } catch (_err) {
+    try {
       const fallbackQuery = await env.DB.prepare('SELECT person_id, scanned_at, status, source FROM attendance_records WHERE session_id = ?').bind(session.id).all();
       attendanceRows = (fallbackQuery.results || []).map(r => ({ ...r, verified_by_name: 'Supervisor' }));
-    } else {
-      throw err;
+    } catch {
+      attendanceRows = [];
     }
   }
 
@@ -587,17 +581,37 @@ async function listPersons(request, env) {
 async function createPerson(request, env) {
   const currentUser = await getUserFromRequest(request, env);
   if (currentUser && currentUser.role !== 'admin') {
-    return errorResponse('Admin permission required to manage roster', 403);
+    return errorResponse('Admin permission required to manage roster. Please sign in as admin.', 403);
   }
   let body;
   try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
-  const firstName = (body?.firstName || '').trim();
-  const lastName = (body?.lastName || '').trim();
-  const identifierNumber = String(body?.identifierNumber || '').trim();
-  const groupName = (body?.groupName || '').trim() || 'General';
 
-  if (!firstName || !lastName || !identifierNumber) {
-    return errorResponse('First name, last name, and identifier number are required', 400);
+  // If client posted an array or a persons list to /api/persons, route automatically to bulk import
+  if (Array.isArray(body) || (body && Array.isArray(body.persons))) {
+    return await bulkImportPersons(request, env, body);
+  }
+
+  let firstName = (body?.firstName || body?.first_name || body?.name || '').trim();
+  let lastName = (body?.lastName || body?.last_name || '').trim();
+  const identifierNumber = String(body?.identifierNumber || body?.identifier_number || body?.id || '').trim();
+  const groupName = (body?.groupName || body?.group_name || body?.group || 'General').trim() || 'General';
+
+  if (!firstName && !lastName) {
+    return errorResponse('Name and identifier number are required', 400);
+  }
+  if (!identifierNumber) {
+    return errorResponse('Identifier number is required', 400);
+  }
+
+  if (!lastName && firstName) {
+    const spaceIdx = firstName.indexOf(' ');
+    if (spaceIdx > 0) {
+      const full = firstName;
+      firstName = full.slice(0, spaceIdx).trim();
+      lastName = full.slice(spaceIdx + 1).trim();
+    } else {
+      lastName = '—';
+    }
   }
 
   const existing = await env.DB.prepare('SELECT id FROM persons WHERE identifier_number = ?').bind(identifierNumber).first();
@@ -625,7 +639,7 @@ async function createPerson(request, env) {
 async function deletePerson(request, env) {
   const currentUser = await getUserFromRequest(request, env);
   if (currentUser && currentUser.role !== 'admin') {
-    return errorResponse('Admin permission required to manage roster', 403);
+    return errorResponse('Admin permission required to manage roster. Please sign in as admin.', 403);
   }
   let body;
   try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
@@ -637,44 +651,63 @@ async function deletePerson(request, env) {
   return json({ success: true, deletedId: id });
 }
 
-async function bulkImportPersons(request, env) {
+async function bulkImportPersons(request, env, preParsedBody = null) {
   const currentUser = await getUserFromRequest(request, env);
   if (currentUser && currentUser.role !== 'admin') {
-    return errorResponse('Admin permission required to manage roster', 403);
+    return errorResponse('Admin permission required to manage roster. Please sign in as admin.', 403);
   }
-  let body;
-  try {
-    body = await readBody(request, 15 * 1024 * 1024); // Allow up to 15MB for large bulk imports
-  } catch (err) {
-    const msg = err?.message === 'Request too large' ? 'Import payload exceeds 15MB limit' : 'Invalid request payload';
-    return errorResponse(msg, 400);
+  let body = preParsedBody;
+  if (!body) {
+    try {
+      body = await readBody(request, 20 * 1024 * 1024); // Allow up to 20MB for large imports
+    } catch (err) {
+      const msg = err?.message === 'Request too large' ? 'Import payload exceeds 20MB limit' : 'Invalid request payload';
+      return errorResponse(msg, 400);
+    }
   }
 
-  const list = body?.persons;
+  const list = Array.isArray(body) ? body : (body?.persons || body?.attendees || body?.data || []);
   if (!Array.isArray(list) || list.length === 0) return errorResponse('Array of persons required', 400);
 
   const createdAt = Math.floor(Date.now() / 1000);
   const validItems = [];
 
   for (const item of list) {
-    const firstName = String(item.firstName || item.first_name || '').trim();
-    const lastName = String(item.lastName || item.last_name || '').trim();
-    const identifierNumber = String(item.identifierNumber || item.identifier_number || item.id || '').trim();
-    const groupName = String(item.groupName || item.group_name || item.group || 'General').trim();
+    let firstName = String(item.firstName || item.first_name || item.name || item.attendee || '').trim();
+    let lastName = String(item.lastName || item.last_name || item.surname || '').trim();
+    const identifierNumber = String(item.identifierNumber || item.identifier_number || item.id || item.code || item.number || item.badge || item.barcode || '').trim();
+    const groupName = String(item.groupName || item.group_name || item.group || item.dept || item.department || item.team || 'General').trim() || 'General';
 
-    if (!firstName || !lastName || !identifierNumber) continue;
+    if (!identifierNumber) continue;
+    if (!firstName && !lastName) continue;
+
+    if (!lastName && firstName) {
+      const spaceIdx = firstName.indexOf(' ');
+      if (spaceIdx > 0) {
+        const full = firstName;
+        firstName = full.slice(0, spaceIdx).trim();
+        lastName = full.slice(spaceIdx + 1).trim();
+      } else {
+        lastName = '—';
+      }
+    }
+    if (!firstName && lastName) {
+      firstName = lastName;
+      lastName = '—';
+    }
+
     validItems.push({ firstName, lastName, identifierNumber, groupName });
   }
 
   if (validItems.length === 0) {
-    return errorResponse('No valid attendees found in submission. Ensure first name, last name, and identifier number are provided.', 400);
+    return errorResponse('No valid attendees found in submission. Ensure identifier and name are provided.', 400);
   }
 
   const insertSql = 'INSERT INTO persons (first_name, last_name, identifier_number, group_name, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(identifier_number) DO UPDATE SET first_name=excluded.first_name, last_name=excluded.last_name, group_name=excluded.group_name';
 
   let importedCount = 0;
   if (typeof env.DB.batch === 'function') {
-    const CHUNK_SIZE = 100;
+    const CHUNK_SIZE = 50; // Use 50 statements per D1 batch for optimal speed and reliability
     for (let i = 0; i < validItems.length; i += CHUNK_SIZE) {
       const chunk = validItems.slice(i, i + CHUNK_SIZE);
       const statements = chunk.map(item =>

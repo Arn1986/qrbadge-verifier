@@ -225,3 +225,60 @@ test('large bulk roster import of 500 attendees processes without error', async 
   assert.equal(countRow.count, 500);
 });
 
+test('unmigrated attendance table without verified_by columns operates gracefully without crashing', async () => {
+  // Create an environment that has NOT applied migration 0005
+  const sqlite = new DatabaseSync(':memory:');
+  sqlite.exec(readFileSync(new URL('../migrations/0001_initial.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../migrations/0002_rate_limit.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../migrations/0003_attendance.sql', import.meta.url), 'utf8'));
+  sqlite.exec(readFileSync(new URL('../migrations/0004_supervisors_and_pwa.sql', import.meta.url), 'utf8'));
+  // Note: 0005 is intentionally NOT executed here to simulate user's unmigrated D1 state!
+
+  const env = {
+    STORAGE_KEY_HEX: 'D4'.repeat(32),
+    ADMIN_BASIC_USERNAME: 'admin',
+    ADMIN_BASIC_PASSWORD: 'long-test-password',
+    DB: {
+      prepare(query) {
+        return {
+          bind(...values) {
+            return {
+              async first() { return sqlite.prepare(query).get(...values) ?? null; },
+              async all() { return { results: sqlite.prepare(query).all(...values) }; },
+              async run() { return sqlite.prepare(query).run(...values); }
+            };
+          },
+          async first() { return sqlite.prepare(query).get() ?? null; },
+          async all() { return { results: sqlite.prepare(query).all() }; },
+          async run() { return sqlite.prepare(query).run(); }
+        };
+      }
+    },
+    ASSETS: { fetch: async () => new Response('TEST') }
+  };
+
+  // Add person
+  sqlite.prepare('INSERT INTO persons (first_name, last_name, identifier_number, group_name, created_at) VALUES (?, ?, ?, ?, ?)').run('Grace', 'Hopper', 'GH-001', 'Computing', 1700000000);
+  const person = sqlite.prepare('SELECT id FROM persons WHERE identifier_number = ?').get('GH-001');
+
+  // 1. Mark attendance on unmigrated table
+  const markReq = new Request('https://example.test/api/attendance/mark', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ sessionId: 1, personId: person.id, source: 'camera', verifiedByName: 'Operator Alice' })
+  });
+  const markRes = await worker.fetch(markReq, env);
+  assert.equal(markRes.status, 200);
+  const markData = await markRes.json();
+  assert.equal(markData.success, true);
+
+  // 2. Fetch reports on unmigrated table - should NOT throw no such column error!
+  const reportReq = new Request('https://example.test/api/reports?sessionId=1', { method: 'GET' });
+  const reportRes = await worker.fetch(reportReq, env);
+  assert.equal(reportRes.status, 200);
+  const reportData = await reportRes.json();
+  assert.equal(reportData.total, 1);
+  assert.equal(reportData.present, 1);
+  assert.equal(reportData.groups[0].members[0].isPresent, true);
+});
+
