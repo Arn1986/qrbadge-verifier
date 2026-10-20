@@ -991,29 +991,136 @@
   bulkTextarea?.addEventListener('input', updateBulkPreview);
 
   function parseCSV(text) {
-    const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    const parsed = [];
-    lines.forEach((line, idx) => {
-      const parts = line.split(/[,\t]/).map(p => p.trim().replace(/^["']|["']$/g, ''));
-      if (parts.length >= 3) {
-        if (idx === 0 && (parts[0].toLowerCase().includes('first') || parts[2].toLowerCase().includes('id'))) {
-          return;
+    text = (text || '').replace(/^\uFEFF/, '').trim();
+    if (!text) return [];
+
+    // Detect delimiter from first non-empty line
+    const firstLine = text.split(/\r?\n/).find(l => l.trim().length > 0) || '';
+    let delimiter = ',';
+    const commaCount = (firstLine.match(/,/g) || []).length;
+    const semicolonCount = (firstLine.match(/;/g) || []).length;
+    const tabCount = (firstLine.match(/\t/g) || []).length;
+    if (semicolonCount > commaCount && semicolonCount > tabCount) delimiter = ';';
+    else if (tabCount > commaCount && tabCount > semicolonCount) delimiter = '\t';
+
+    // Parse CSV rows taking quoted fields and escaped quotes into account
+    const rows = [];
+    let currentRow = [];
+    let currentField = '';
+    let inQuotes = false;
+
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      const nextCh = text[i + 1];
+
+      if (inQuotes) {
+        if (ch === '"') {
+          if (nextCh === '"') {
+            currentField += '"';
+            i++;
+          } else {
+            inQuotes = false;
+          }
+        } else {
+          currentField += ch;
         }
+      } else {
+        if (ch === '"') {
+          inQuotes = true;
+        } else if (ch === delimiter) {
+          currentRow.push(currentField.trim());
+          currentField = '';
+        } else if (ch === '\r') {
+          if (nextCh === '\n') i++;
+          currentRow.push(currentField.trim());
+          currentField = '';
+          if (currentRow.some(val => val !== '')) rows.push(currentRow);
+          currentRow = [];
+        } else if (ch === '\n') {
+          currentRow.push(currentField.trim());
+          currentField = '';
+          if (currentRow.some(val => val !== '')) rows.push(currentRow);
+          currentRow = [];
+        } else {
+          currentField += ch;
+        }
+      }
+    }
+
+    if (currentField || currentRow.length > 0) {
+      currentRow.push(currentField.trim());
+      if (currentRow.some(val => val !== '')) rows.push(currentRow);
+    }
+
+    if (rows.length === 0) return [];
+
+    // Analyze first row for headers
+    let fnIdx = -1, lnIdx = -1, idIdx = -1, grpIdx = -1, nameIdx = -1;
+    const headerRow = rows[0].map(h => h.toLowerCase().replace(/[^a-z0-9]/g, ''));
+
+    headerRow.forEach((h, idx) => {
+      if (['firstname', 'first', 'givenname', 'fname'].includes(h)) fnIdx = idx;
+      else if (['lastname', 'last', 'surname', 'familyname', 'lname'].includes(h)) lnIdx = idx;
+      else if (['name', 'fullname', 'attendee', 'person'].includes(h)) nameIdx = idx;
+      else if (['identifier', 'id', 'identifiernumber', 'badgenumber', 'badge', 'barcode', 'number', 'empid', 'employeeid'].includes(h)) idIdx = idx;
+      else if (['group', 'groupname', 'department', 'dept', 'team', 'cohort', 'class', 'section'].includes(h)) grpIdx = idx;
+    });
+
+    const hasHeader = (fnIdx >= 0 || idIdx >= 0 || nameIdx >= 0);
+    const dataRows = hasHeader ? rows.slice(1) : rows;
+
+    // Fallback column positions if no recognized header
+    if (fnIdx < 0 && nameIdx < 0) fnIdx = 0;
+    if (lnIdx < 0 && nameIdx < 0) lnIdx = 1;
+    if (idIdx < 0) idIdx = 2;
+    if (grpIdx < 0) grpIdx = 3;
+
+    const parsed = [];
+    for (const row of dataRows) {
+      let fn = '';
+      let ln = '';
+      let id = '';
+      let grp = 'General';
+
+      if (nameIdx >= 0 && fnIdx < 0 && lnIdx < 0) {
+        const fullName = (row[nameIdx] || '').trim();
+        const spaceIdx = fullName.indexOf(' ');
+        if (spaceIdx > 0) {
+          fn = fullName.slice(0, spaceIdx).trim();
+          ln = fullName.slice(spaceIdx + 1).trim();
+        } else {
+          fn = fullName;
+          ln = '—';
+        }
+      } else {
+        fn = (fnIdx >= 0 && row[fnIdx] !== undefined) ? row[fnIdx].trim() : '';
+        ln = (lnIdx >= 0 && row[lnIdx] !== undefined) ? row[lnIdx].trim() : '';
+      }
+
+      if (idIdx >= 0 && row[idIdx] !== undefined) {
+        id = row[idIdx].trim();
+      }
+      if (grpIdx >= 0 && row[grpIdx] !== undefined && row[grpIdx].trim()) {
+        grp = row[grpIdx].trim();
+      }
+
+      if (fn && ln && id) {
         parsed.push({
-          firstName: parts[0],
-          lastName: parts[1],
-          identifierNumber: parts[2],
-          groupName: parts[3] || 'General'
+          firstName: fn,
+          lastName: ln,
+          identifierNumber: id,
+          groupName: grp
         });
       }
-    });
+    }
+
     return parsed;
   }
 
   function updateBulkPreview() {
     const list = parseCSV(bulkTextarea.value);
     if (list.length === 0) {
-      bulkPreviewSummary.textContent = 'No valid rows detected yet. Enter lines with "First, Last, Identifier, Group".';
+      bulkPreviewSummary.textContent = 'No valid rows detected yet. Format: "First Name, Last Name, Identifier, Group".';
       bulkPreviewSummary.style.color = '#8496a5';
     } else {
       bulkPreviewSummary.textContent = `✓ Detected ${list.length} valid attendee row${list.length === 1 ? '' : 's'} ready for import.`;
@@ -1024,20 +1131,44 @@
   document.querySelector('#btn-execute-import')?.addEventListener('click', async () => {
     const list = parseCSV(bulkTextarea.value);
     if (list.length === 0) {
-      showToast('Please provide at least one valid row before importing.', 'error');
+      showToast('Please provide at least one valid attendee row (e.g. First Name, Last Name, Identifier, Group).', 'error');
       return;
     }
+
+    const importBtn = document.querySelector('#btn-execute-import');
+    const cancelBtn = document.querySelector('#modal-bulk-cancel');
+    const originalText = importBtn.textContent;
+    importBtn.disabled = true;
+    cancelBtn.disabled = true;
+
     try {
-      const res = await api('/api/persons/bulk', {
-        method: 'POST',
-        body: JSON.stringify({ persons: list })
-      });
+      // Chunk into batches of 250 rows for smooth network transmission and live progress
+      const CHUNK_SIZE = 250;
+      let totalImported = 0;
+
+      for (let i = 0; i < list.length; i += CHUNK_SIZE) {
+        const batch = list.slice(i, i + CHUNK_SIZE);
+        const processedSoFar = Math.min(i + batch.length, list.length);
+        importBtn.textContent = `Importing ${processedSoFar} of ${list.length}...`;
+
+        const res = await api('/api/persons/bulk', {
+          method: 'POST',
+          body: JSON.stringify({ persons: batch })
+        });
+        totalImported += (res.count || batch.length);
+      }
+
       bulkModal.hidden = true;
       bulkTextarea.value = '';
-      showToast(`Successfully imported ${res.count} attendees!`, 'success');
+      showToast(`Successfully imported ${totalImported} attendees into the roster!`, 'success', 5000);
       loadRoster();
+      loadReports();
     } catch (err) {
-      showToast(err.message, 'error');
+      showToast(`Import failed: ${err.message}`, 'error', 6000);
+    } finally {
+      importBtn.disabled = false;
+      cancelBtn.disabled = false;
+      importBtn.textContent = originalText;
     }
   });
 

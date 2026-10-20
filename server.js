@@ -128,6 +128,20 @@ const DB = {
       },
       ...wrap(query, [])
     };
+  },
+  async batch(statements) {
+    sqlite.exec('BEGIN TRANSACTION');
+    try {
+      const results = [];
+      for (const stmt of statements) {
+        results.push(await stmt.run());
+      }
+      sqlite.exec('COMMIT');
+      return results;
+    } catch (err) {
+      sqlite.exec('ROLLBACK');
+      throw err;
+    }
   }
 };
 

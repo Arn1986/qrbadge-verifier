@@ -185,3 +185,43 @@ test('attendance roster creation, bulk import, plain scan, encrypted scan, repor
   assert.equal(reportAfterToggle.present, 2);
   assert.equal(reportAfterToggle.percent, 50);
 });
+
+test('large bulk roster import of 500 attendees processes without error', async () => {
+  const env = createEnv();
+
+  // Create admin user in SQLite memory
+  const hash = '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918';
+  env.sqlite.prepare('INSERT INTO users (username, password_hash, display_name, role, created_at) VALUES (?, ?, ?, ?, ?)').run('admin', hash, 'Admin', 'admin', 1700000000);
+  env.sqlite.prepare('INSERT INTO user_tokens (token, user_id, created_at, expires_at) VALUES (?, 1, ?, ?)').run('test-admin-token', 1700000000, 2000000000);
+
+  // Generate 500 attendee objects
+  const attendees500 = [];
+  for (let i = 1; i <= 500; i++) {
+    attendees500.push({
+      firstName: `Attendee${i}`,
+      lastName: `Test`,
+      identifierNumber: `BULK-ID-${i}`,
+      groupName: i % 2 === 0 ? 'Engineering' : 'Marketing'
+    });
+  }
+
+  const bulkReq = new Request('https://example.test/api/persons/bulk', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      Authorization: 'Bearer test-admin-token'
+    },
+    body: JSON.stringify({ persons: attendees500 })
+  });
+
+  const res = await worker.fetch(bulkReq, env);
+  assert.equal(res.status, 200);
+  const data = await res.json();
+  assert.equal(data.success, true);
+  assert.equal(data.count, 500);
+
+  // Verify attendees stored in database
+  const countRow = env.sqlite.prepare('SELECT count(*) as count FROM persons WHERE identifier_number LIKE \'BULK-ID-%\'').get();
+  assert.equal(countRow.count, 500);
+});
+

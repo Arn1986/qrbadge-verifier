@@ -30,10 +30,11 @@ function acceptedMutation(request) {
   const origin = request.headers.get('origin');
   return request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() === 'application/json' && (!origin || origin === new URL(request.url).origin);
 }
-async function readBody(request) {
-  if (Number(request.headers.get('content-length')) > 2048) throw new Error('Request too large');
+async function readBody(request, maxBytes = 65536) {
+  const contentLength = Number(request.headers.get('content-length'));
+  if (contentLength && contentLength > maxBytes) throw new Error('Request too large');
   const body = await request.text();
-  if (body.length > 2048) throw new Error('Request too large');
+  if (body.length > maxBytes) throw new Error('Request too large');
   return JSON.parse(body);
 }
 async function wrappingKey(env) {
@@ -642,12 +643,18 @@ async function bulkImportPersons(request, env) {
     return errorResponse('Admin permission required to manage roster', 403);
   }
   let body;
-  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+  try {
+    body = await readBody(request, 15 * 1024 * 1024); // Allow up to 15MB for large bulk imports
+  } catch (err) {
+    const msg = err?.message === 'Request too large' ? 'Import payload exceeds 15MB limit' : 'Invalid request payload';
+    return errorResponse(msg, 400);
+  }
+
   const list = body?.persons;
   if (!Array.isArray(list) || list.length === 0) return errorResponse('Array of persons required', 400);
 
   const createdAt = Math.floor(Date.now() / 1000);
-  let importedCount = 0;
+  const validItems = [];
 
   for (const item of list) {
     const firstName = String(item.firstName || item.first_name || '').trim();
@@ -656,11 +663,31 @@ async function bulkImportPersons(request, env) {
     const groupName = String(item.groupName || item.group_name || item.group || 'General').trim();
 
     if (!firstName || !lastName || !identifierNumber) continue;
+    validItems.push({ firstName, lastName, identifierNumber, groupName });
+  }
 
-    await env.DB.prepare(
-      'INSERT INTO persons (first_name, last_name, identifier_number, group_name, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(identifier_number) DO UPDATE SET first_name=excluded.first_name, last_name=excluded.last_name, group_name=excluded.group_name'
-    ).bind(firstName, lastName, identifierNumber, groupName, createdAt).run();
-    importedCount++;
+  if (validItems.length === 0) {
+    return errorResponse('No valid attendees found in submission. Ensure first name, last name, and identifier number are provided.', 400);
+  }
+
+  const insertSql = 'INSERT INTO persons (first_name, last_name, identifier_number, group_name, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(identifier_number) DO UPDATE SET first_name=excluded.first_name, last_name=excluded.last_name, group_name=excluded.group_name';
+
+  let importedCount = 0;
+  if (typeof env.DB.batch === 'function') {
+    const CHUNK_SIZE = 100;
+    for (let i = 0; i < validItems.length; i += CHUNK_SIZE) {
+      const chunk = validItems.slice(i, i + CHUNK_SIZE);
+      const statements = chunk.map(item =>
+        env.DB.prepare(insertSql).bind(item.firstName, item.lastName, item.identifierNumber, item.groupName, createdAt)
+      );
+      await env.DB.batch(statements);
+      importedCount += chunk.length;
+    }
+  } else {
+    for (const item of validItems) {
+      await env.DB.prepare(insertSql).bind(item.firstName, item.lastName, item.identifierNumber, item.groupName, createdAt).run();
+      importedCount++;
+    }
   }
 
   return json({ success: true, count: importedCount, totalSubmitted: list.length });
