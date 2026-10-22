@@ -25,6 +25,8 @@
   let selectedCamera = null;
   const canvas = document.createElement('canvas');
   const canvasContext = canvas.getContext('2d', { willReadFrequently: true });
+  const qrOverlay = document.querySelector('#qr-overlay');
+  const qrOverlayContext = qrOverlay ? qrOverlay.getContext('2d') : null;
 
   // DOM Elements
   const video = document.querySelector('#video');
@@ -495,6 +497,113 @@
     } catch {}
   }
 
+  function clearQROverlay() {
+    if (!qrOverlay || !qrOverlayContext) return;
+    qrOverlayContext.clearRect(0, 0, qrOverlay.width, qrOverlay.height);
+  }
+
+  function mapVideoToDisplay(point, videoWidth, videoHeight, displayWidth, displayHeight) {
+    if (!videoWidth || !videoHeight) return { x: point.x, y: point.y };
+    const videoAspect = videoWidth / videoHeight;
+    const displayAspect = displayWidth / displayHeight;
+    let renderWidth = displayWidth;
+    let renderHeight = displayHeight;
+    let offsetX = 0;
+    let offsetY = 0;
+
+    if (displayAspect > videoAspect) {
+      renderHeight = displayHeight;
+      renderWidth = renderHeight * videoAspect;
+      offsetX = (displayWidth - renderWidth) / 2;
+    } else {
+      renderWidth = displayWidth;
+      renderHeight = renderWidth / videoAspect;
+      offsetY = (displayHeight - renderHeight) / 2;
+    }
+
+    const scaleX = renderWidth / videoWidth;
+    const scaleY = renderHeight / videoHeight;
+
+    return {
+      x: offsetX + (point.x * scaleX),
+      y: offsetY + (point.y * scaleY)
+    };
+  }
+
+  function drawCornerBracket(ctx, corner, nextPoint, prevPoint, bracketLength = 22) {
+    const dx1 = nextPoint.x - corner.x;
+    const dy1 = nextPoint.y - corner.y;
+    const len1 = Math.hypot(dx1, dy1) || 1;
+    const u1x = (dx1 / len1) * Math.min(bracketLength, len1 * 0.45);
+    const u1y = (dy1 / len1) * Math.min(bracketLength, len1 * 0.45);
+
+    const dx2 = prevPoint.x - corner.x;
+    const dy2 = prevPoint.y - corner.y;
+    const len2 = Math.hypot(dx2, dy2) || 1;
+    const u2x = (dx2 / len2) * Math.min(bracketLength, len2 * 0.45);
+    const u2y = (dy2 / len2) * Math.min(bracketLength, len2 * 0.45);
+
+    ctx.beginPath();
+    ctx.moveTo(corner.x + u1x, corner.y + u1y);
+    ctx.lineTo(corner.x, corner.y);
+    ctx.lineTo(corner.x + u2x, corner.y + u2y);
+    ctx.stroke();
+  }
+
+  function drawQRHighlight(location, videoWidth, videoHeight) {
+    if (!qrOverlay || !qrOverlayContext || !location) return;
+
+    const displayW = qrOverlay.clientWidth || video.clientWidth;
+    const displayH = qrOverlay.clientHeight || video.clientHeight;
+    if (!displayW || !displayH) return;
+
+    if (qrOverlay.width !== displayW || qrOverlay.height !== displayH) {
+      qrOverlay.width = displayW;
+      qrOverlay.height = displayH;
+    }
+
+    const p1 = mapVideoToDisplay(location.topLeftCorner, videoWidth, videoHeight, displayW, displayH);
+    const p2 = mapVideoToDisplay(location.topRightCorner, videoWidth, videoHeight, displayW, displayH);
+    const p3 = mapVideoToDisplay(location.bottomRightCorner, videoWidth, videoHeight, displayW, displayH);
+    const p4 = mapVideoToDisplay(location.bottomLeftCorner, videoWidth, videoHeight, displayW, displayH);
+
+    qrOverlayContext.save();
+    qrOverlayContext.clearRect(0, 0, displayW, displayH);
+
+    // 1. Semi-transparent glowing fill inside detected QR quad
+    qrOverlayContext.beginPath();
+    qrOverlayContext.moveTo(p1.x, p1.y);
+    qrOverlayContext.lineTo(p2.x, p2.y);
+    qrOverlayContext.lineTo(p3.x, p3.y);
+    qrOverlayContext.lineTo(p4.x, p4.y);
+    qrOverlayContext.closePath();
+
+    qrOverlayContext.fillStyle = 'rgba(16, 185, 129, 0.18)';
+    qrOverlayContext.fill();
+
+    // 2. Highlighting bounding outline with emerald glow
+    qrOverlayContext.lineWidth = 2.5;
+    qrOverlayContext.strokeStyle = '#10b981';
+    qrOverlayContext.shadowColor = '#10b981';
+    qrOverlayContext.shadowBlur = 10;
+    qrOverlayContext.stroke();
+
+    // 3. Glowing accentuated corner brackets at all 4 corners
+    qrOverlayContext.lineWidth = 4.5;
+    qrOverlayContext.lineCap = 'round';
+    qrOverlayContext.lineJoin = 'round';
+    qrOverlayContext.strokeStyle = '#34d399';
+    qrOverlayContext.shadowColor = '#34d399';
+    qrOverlayContext.shadowBlur = 14;
+
+    drawCornerBracket(qrOverlayContext, p1, p2, p4);
+    drawCornerBracket(qrOverlayContext, p2, p3, p1);
+    drawCornerBracket(qrOverlayContext, p3, p4, p2);
+    drawCornerBracket(qrOverlayContext, p4, p1, p3);
+
+    qrOverlayContext.restore();
+  }
+
   function stopCamera() {
     isScanning = false;
     if (videoStream) {
@@ -503,6 +612,10 @@
     }
     video.style.display = 'none';
     if (scanReticle) scanReticle.hidden = true;
+    if (qrOverlay) {
+      qrOverlay.hidden = true;
+      clearQROverlay();
+    }
     cameraEmpty.style.display = 'grid';
     startBtn.hidden = false;
     stopBtn.hidden = true;
@@ -530,6 +643,10 @@
 
       video.style.display = 'block';
       if (scanReticle) scanReticle.hidden = false;
+      if (qrOverlay) {
+        qrOverlay.hidden = false;
+        clearQROverlay();
+      }
       cameraEmpty.style.display = 'none';
       startBtn.hidden = true;
       stopBtn.hidden = false;
@@ -555,8 +672,11 @@
         inversionAttempts: 'dontInvert'
       });
 
-      if (qrCode && qrCode.data) {
+      if (qrCode && qrCode.data && qrCode.location) {
+        drawQRHighlight(qrCode.location, video.videoWidth, video.videoHeight);
         handleScannedCode(qrCode.data, 'camera');
+      } else if (!scanBusy) {
+        clearQROverlay();
       }
     }
     if (isScanning) {
@@ -584,7 +704,10 @@
         window.BadgeSounds?.play('not_found');
         cameraStatus.textContent = `Identifier "${result.rawIdentifier}" is not registered in the roster.`;
         showToast(`Identifier "${result.rawIdentifier}" not found.`, 'error');
-        setTimeout(() => { scanBusy = false; }, 1600);
+        setTimeout(() => {
+          clearQROverlay();
+          scanBusy = false;
+        }, 1600);
         return;
       }
 
@@ -592,7 +715,10 @@
     } catch (err) {
       cameraStatus.textContent = 'Error processing scan.';
       showToast(err.message, 'error');
-      setTimeout(() => { scanBusy = false; }, 1600);
+      setTimeout(() => {
+        clearQROverlay();
+        scanBusy = false;
+      }, 1600);
     }
   }
 
@@ -638,6 +764,7 @@
   function closeConfirmModal() {
     modalConfirm.hidden = true;
     pendingAttendee = null;
+    clearQROverlay();
     cameraStatus.textContent = 'Ready for next badge.';
     setTimeout(() => { scanBusy = false; }, 400);
   }
