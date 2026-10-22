@@ -109,7 +109,7 @@
             Camera <select id="cameras"></select>
           </label>
         </div>
-        <p class="hint" id="camera-status" role="status">Point camera at an attendee's QR badge. Supports plain identifiers (e.g. 104829) or encrypted badges.</p>
+        <p class="hint" id="camera-status" role="status">Point camera at an attendee's QR badge to verify.</p>
       </div>
 
       <!-- Quick Lookup / Paste Card -->
@@ -117,10 +117,9 @@
         <h2>Manual Lookup &amp; Keypad</h2>
         <p class="small">Enter an attendee identifier number or paste an encrypted badge payload.</p>
         <form id="paste-form">
-          <textarea id="hex" rows="2" spellcheck="false" autocomplete="off" placeholder="Enter identifier number (e.g. 104829) or paste QR code data"></textarea>
+          <textarea id="hex" rows="2" spellcheck="false" autocomplete="off" placeholder="Enter attendee identifier number or paste QR code data"></textarea>
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;">
             <button type="submit">Look up attendee</button>
-            <span class="small">Sample demo IDs: <strong>1234</strong> (John Doe), <strong>104829</strong> (Maria Santos)</span>
           </div>
         </form>
       </div>
@@ -196,6 +195,7 @@
         <div id="group-cards-container" class="group-grid">
           <!-- Populated by JS -->
         </div>
+        <div id="group-pagination-bar" class="pagination-bar"></div>
 
         <!-- Filter & Search Bar -->
         <div class="filter-bar">
@@ -232,6 +232,7 @@
             </tbody>
           </table>
         </div>
+        <div id="attendee-pagination-bar" class="pagination-bar"></div>
       </div>
     </section>
 
@@ -399,15 +400,6 @@
           <button type="submit" style="flex:1;">Sign In</button>
         </div>
       </form>
-
-      <div class="demo-login-box">
-        <strong>Quick Sign-in (Demo Accounts):</strong>
-        <div class="demo-login-btns">
-          <button id="btn-quick-login-sup1" type="button" class="btn-sm btn-outline">⚡ Alex (Supervisor)</button>
-          <button id="btn-quick-login-sup2" type="button" class="btn-sm btn-outline">⚡ Jordan (Supervisor)</button>
-          <button id="btn-quick-login-admin" type="button" class="btn-sm btn-outline">🔑 Administrator</button>
-        </div>
-      </div>
     </div>
   </div>
 
@@ -453,7 +445,7 @@
         <input id="add-last-name" type="text" required placeholder="e.g. Doe" style="width:100%;">
 
         <label for="add-identifier">Identifier Number / Barcode</label>
-        <input id="add-identifier" type="text" required placeholder="e.g. 104829 or EMP-01" style="width:100%;">
+        <input id="add-identifier" type="text" required placeholder="e.g. EMP-1048 or BADGE-01" style="width:100%;">
 
         <label for="add-group">Group Name</label>
         <input id="add-group" type="text" required placeholder="e.g. Engineering, Sales, Operations" list="group-suggestions" style="width:100%;">

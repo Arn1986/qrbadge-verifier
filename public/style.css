@@ -858,15 +858,116 @@ footer {
   animation: pulse 1s infinite;
 }
 
-/* Viewport scan reticle */
-.scan-reticle {
-  position: absolute;
-  width: min(220px, 60vw);
-  height: min(220px, 60vw);
-  border: 2px solid rgba(255, 102, 42, 0.75);
-  border-radius: 16px;
-  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.35);
-  pointer-events: none;
+/* Pagination Controls for Groups & Attendees */
+.pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 4px 6px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  color: #4b6275;
+}
+
+.pagination-meta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.pagination-count {
+  font-weight: 500;
+  color: #334e68;
+}
+
+.pagination-size-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.pagination-size-label {
+  font-size: 12px;
+  color: #627d98;
+  margin-right: 2px;
+}
+
+.pagination-size-btn {
+  padding: 3px 8px;
+  font-size: 12px;
+  font-weight: 500;
+  background: #f0f4f8;
+  border: 1px solid #d9e2ec;
+  color: #334e68;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-height: 28px;
+}
+
+.pagination-size-btn:hover {
+  background: #e2e8f0;
+  color: #102a43;
+}
+
+.pagination-size-btn.active {
+  background: #ff662a;
+  border-color: #ff662a;
+  color: #fff;
+  font-weight: 600;
+}
+
+.pagination-nav {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.page-btn {
+  padding: 4px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  font-weight: 500;
+  background: #fff;
+  border: 1px solid #d9e2ec;
+  color: #243b53;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  min-height: 32px;
+  min-width: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.page-btn:hover:not(:disabled) {
+  background: #f0f4f8;
+  border-color: #bcccdc;
+  color: #102a43;
+}
+
+.page-btn.active {
+  background: #12243a;
+  border-color: #12243a;
+  color: #fff;
+  font-weight: 600;
+}
+
+.page-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  background: #f8fafc;
+  border-color: #e2e8f0;
+}
+
+.page-ellipsis {
+  padding: 0 4px;
+  color: #829ab1;
+  font-size: 12px;
 }
 
 @media (max-width: 768px) {

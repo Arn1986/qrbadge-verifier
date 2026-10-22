@@ -9,6 +9,10 @@
   let activeReportFilter = 'all';
   let activeReportGroup = '';
   let activeReportSearch = '';
+  let groupPage = 1;
+  let groupPageSize = 6; // Selectable: 4, 6, 12, 'all'
+  let attendeePage = 1;
+  let attendeePageSize = 15; // Selectable: 10, 15, 25, 50, 'all'
   let pendingAttendee = null;
   let currentUser = null;
   let deferredInstallPrompt = null;
@@ -153,18 +157,8 @@
       }
     }
 
-    // Default auto-login to supervisor1 for instant frictionless experience
-    try {
-      const loginRes = await api('/api/auth/login', {
-        method: 'POST',
-        body: JSON.stringify({ username: 'supervisor1', password: 'supervisor123' })
-      });
-      setAuthToken(loginRes.token);
-      setUser(loginRes.user);
-    } catch {
-      // If default login fails, show login modal
-      openLoginModal();
-    }
+    // Show clean login modal if no authenticated session exists
+    openLoginModal();
   }
 
   function setUser(user) {
@@ -223,25 +217,6 @@
     } catch (err) {
       showToast(err.message, 'error');
     }
-  });
-
-  // Quick Sign-in helpers
-  document.querySelector('#btn-quick-login-sup1')?.addEventListener('click', async () => {
-    loginUsernameInput.value = 'supervisor1';
-    loginPasswordInput.value = 'supervisor123';
-    formLogin.requestSubmit();
-  });
-
-  document.querySelector('#btn-quick-login-sup2')?.addEventListener('click', async () => {
-    loginUsernameInput.value = 'supervisor2';
-    loginPasswordInput.value = 'supervisor123';
-    formLogin.requestSubmit();
-  });
-
-  document.querySelector('#btn-quick-login-admin')?.addEventListener('click', async () => {
-    loginUsernameInput.value = 'admin';
-    loginPasswordInput.value = 'admin123';
-    formLogin.requestSubmit();
   });
 
   // -------------------------------------------------------------
@@ -657,6 +632,102 @@
     }
   }
 
+  // Reusable Pagination Bar Renderer
+  function getPageNumbers(current, total) {
+    if (total <= 7) {
+      return Array.from({ length: total }, (_, i) => i + 1);
+    }
+    const pages = [];
+    pages.push(1);
+    if (current > 3) pages.push('...');
+    const start = Math.max(2, current - 1);
+    const end = Math.min(total - 1, current + 1);
+    for (let i = start; i <= end; i++) pages.push(i);
+    if (current < total - 2) pages.push('...');
+    pages.push(total);
+    return pages;
+  }
+
+  function renderPaginationBar({ container, currentPage, totalPages, totalItems, startIndex, endIndex, currentSize, sizeOptions, itemLabel, onPageChange, onSizeChange }) {
+    if (!container) return;
+    if (totalItems === 0) {
+      container.innerHTML = '';
+      return;
+    }
+
+    const metaDiv = document.createElement('div');
+    metaDiv.className = 'pagination-meta';
+
+    const countSpan = document.createElement('span');
+    countSpan.className = 'pagination-count tabular';
+    if (currentSize === 'all' || (startIndex === 0 && endIndex === totalItems)) {
+      countSpan.textContent = `Showing all ${totalItems} ${itemLabel}`;
+    } else {
+      countSpan.textContent = `Showing ${startIndex + 1}–${endIndex} of ${totalItems} ${itemLabel}`;
+    }
+    metaDiv.append(countSpan);
+
+    const sizeSelectDiv = document.createElement('div');
+    sizeSelectDiv.className = 'pagination-size-select';
+    const sizeLabel = document.createElement('span');
+    sizeLabel.className = 'pagination-size-label';
+    sizeLabel.textContent = 'Per page:';
+    sizeSelectDiv.append(sizeLabel);
+
+    sizeOptions.forEach(opt => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = `pagination-size-btn ${String(currentSize) === String(opt) ? 'active' : ''}`;
+      btn.textContent = opt === 'all' ? 'All' : opt;
+      btn.addEventListener('click', () => onSizeChange(opt));
+      sizeSelectDiv.append(btn);
+    });
+    metaDiv.append(sizeSelectDiv);
+
+    container.innerHTML = '';
+    container.append(metaDiv);
+
+    if (totalPages > 1 && currentSize !== 'all') {
+      const navDiv = document.createElement('div');
+      navDiv.className = 'pagination-nav';
+
+      const prevBtn = document.createElement('button');
+      prevBtn.type = 'button';
+      prevBtn.className = 'page-btn';
+      prevBtn.textContent = '‹ Prev';
+      prevBtn.disabled = currentPage <= 1;
+      prevBtn.addEventListener('click', () => onPageChange(currentPage - 1));
+      navDiv.append(prevBtn);
+
+      const pages = getPageNumbers(currentPage, totalPages);
+      pages.forEach(p => {
+        if (p === '...') {
+          const span = document.createElement('span');
+          span.className = 'page-ellipsis';
+          span.textContent = '…';
+          navDiv.append(span);
+        } else {
+          const pageBtn = document.createElement('button');
+          pageBtn.type = 'button';
+          pageBtn.className = `page-btn tabular ${p === currentPage ? 'active' : ''}`;
+          pageBtn.textContent = p;
+          pageBtn.addEventListener('click', () => onPageChange(p));
+          navDiv.append(pageBtn);
+        }
+      });
+
+      const nextBtn = document.createElement('button');
+      nextBtn.type = 'button';
+      nextBtn.className = 'page-btn';
+      nextBtn.textContent = 'Next ›';
+      nextBtn.disabled = currentPage >= totalPages;
+      nextBtn.addEventListener('click', () => onPageChange(currentPage + 1));
+      navDiv.append(nextBtn);
+
+      container.append(navDiv);
+    }
+  }
+
   function renderReports() {
     if (!currentReports) return;
     const { session, total, present, missing, percent, groups, generatedAt } = currentReports;
@@ -669,21 +740,40 @@
     document.querySelector('#kpi-missing').textContent = missing;
     document.querySelector('#kpi-percent').textContent = `${percent}%`;
 
-    // Group cards
-    const groupCardsContainer = document.querySelector('#group-cards-container');
-    groupCardsContainer.innerHTML = '';
-
+    // Populate Group Filter Select
     const groupFilterSelect = document.querySelector('#report-group-filter');
     const currentSelectedGroup = groupFilterSelect.value;
     groupFilterSelect.innerHTML = '<option value="">All Groups</option>';
-
-    groups.forEach(g => {
+    (groups || []).forEach(g => {
       const opt = document.createElement('option');
       opt.value = g.groupName;
       opt.textContent = `${g.groupName} (${g.present}/${g.total})`;
       if (opt.value === currentSelectedGroup) opt.selected = true;
       groupFilterSelect.append(opt);
+    });
 
+    // Group cards with selectable pagination (4, 6, 12, 'all')
+    const groupCardsContainer = document.querySelector('#group-cards-container');
+    groupCardsContainer.innerHTML = '';
+    const groupPaginationBar = document.querySelector('#group-pagination-bar');
+
+    const allGroups = groups || [];
+    let visibleGroups = allGroups;
+    let totalGroupPages = 1;
+    let groupStartIndex = 0;
+    let groupEndIndex = allGroups.length;
+
+    if (groupPageSize !== 'all') {
+      const size = Number(groupPageSize);
+      totalGroupPages = Math.max(1, Math.ceil(allGroups.length / size));
+      if (groupPage > totalGroupPages) groupPage = totalGroupPages;
+      if (groupPage < 1) groupPage = 1;
+      groupStartIndex = (groupPage - 1) * size;
+      groupEndIndex = Math.min(groupStartIndex + size, allGroups.length);
+      visibleGroups = allGroups.slice(groupStartIndex, groupEndIndex);
+    }
+
+    visibleGroups.forEach(g => {
       const card = document.createElement('div');
       card.className = `group-card ${activeReportGroup === g.groupName ? 'selected' : ''}`;
       card.innerHTML = `
@@ -707,10 +797,32 @@
           activeReportGroup = g.groupName;
           groupFilterSelect.value = g.groupName;
         }
+        attendeePage = 1;
         renderReportTable();
         renderReportsGroupCardHighlight();
       });
       groupCardsContainer.append(card);
+    });
+
+    renderPaginationBar({
+      container: groupPaginationBar,
+      currentPage: groupPage,
+      totalPages: totalGroupPages,
+      totalItems: allGroups.length,
+      startIndex: groupStartIndex,
+      endIndex: groupEndIndex,
+      currentSize: groupPageSize,
+      sizeOptions: [4, 6, 12, 'all'],
+      itemLabel: 'groups',
+      onPageChange: (newPage) => {
+        groupPage = newPage;
+        renderReports();
+      },
+      onSizeChange: (newSize) => {
+        groupPageSize = newSize;
+        groupPage = 1;
+        renderReports();
+      }
     });
 
     renderReportTable();
@@ -730,10 +842,11 @@
   function renderReportTable() {
     if (!currentReports) return;
     const tbody = document.querySelector('#report-table-body');
+    const attendeePaginationBar = document.querySelector('#attendee-pagination-bar');
     tbody.innerHTML = '';
 
     let list = [];
-    currentReports.groups.forEach(g => {
+    (currentReports.groups || []).forEach(g => {
       if (!activeReportGroup || g.groupName === activeReportGroup) {
         list.push(...g.members);
       }
@@ -755,10 +868,27 @@
 
     if (list.length === 0) {
       tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:#6d8496;padding:24px;">No attendees match the selected filter.</td></tr>';
+      renderPaginationBar({ container: attendeePaginationBar, totalItems: 0 });
       return;
     }
 
-    list.forEach(m => {
+    // Attendees selectable pagination (10, 15, 25, 50, 'all')
+    let visibleAttendees = list;
+    let totalAttendeePages = 1;
+    let attStartIndex = 0;
+    let attEndIndex = list.length;
+
+    if (attendeePageSize !== 'all') {
+      const size = Number(attendeePageSize);
+      totalAttendeePages = Math.max(1, Math.ceil(list.length / size));
+      if (attendeePage > totalAttendeePages) attendeePage = totalAttendeePages;
+      if (attendeePage < 1) attendeePage = 1;
+      attStartIndex = (attendeePage - 1) * size;
+      attEndIndex = Math.min(attStartIndex + size, list.length);
+      visibleAttendees = list.slice(attStartIndex, attEndIndex);
+    }
+
+    visibleAttendees.forEach(m => {
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td><strong>${escapeHtml(m.firstName)} ${escapeHtml(m.lastName)}</strong></td>
@@ -796,6 +926,27 @@
 
       tbody.append(tr);
     });
+
+    renderPaginationBar({
+      container: attendeePaginationBar,
+      currentPage: attendeePage,
+      totalPages: totalAttendeePages,
+      totalItems: list.length,
+      startIndex: attStartIndex,
+      endIndex: attEndIndex,
+      currentSize: attendeePageSize,
+      sizeOptions: [10, 15, 25, 50, 'all'],
+      itemLabel: 'attendees',
+      onPageChange: (newPage) => {
+        attendeePage = newPage;
+        renderReportTable();
+      },
+      onSizeChange: (newSize) => {
+        attendeePageSize = newSize;
+        attendeePage = 1;
+        renderReportTable();
+      }
+    });
   }
 
   // Filter handlers
@@ -804,18 +955,21 @@
       document.querySelectorAll('.segmented-control button').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       activeReportFilter = btn.dataset.filter;
+      attendeePage = 1;
       renderReportTable();
     });
   });
 
   document.querySelector('#report-group-filter')?.addEventListener('change', (e) => {
     activeReportGroup = e.target.value;
+    attendeePage = 1;
     renderReportsGroupCardHighlight();
     renderReportTable();
   });
 
   document.querySelector('#report-search')?.addEventListener('input', (e) => {
     activeReportSearch = e.target.value.trim();
+    attendeePage = 1;
     renderReportTable();
   });
 

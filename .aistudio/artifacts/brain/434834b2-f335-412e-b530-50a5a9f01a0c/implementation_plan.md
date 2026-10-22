@@ -1,193 +1,127 @@
-# QRPass — Mobile-First Multi-Supervisor PWA Attendance System
+# Clean Interface & Dual-Level Pagination Implementation Plan
 
-Comprehensive implementation plan to elevate the app into **QRPass**, an installable Progressive Web App (PWA) optimized for mobile smartphones and tablets. It introduces role-based access control (Admin vs. Supervisor accounts), concurrent multi-supervisor scanning with real-time sync, supervisor audit attribution on reports, dedicated camera stop controls, and the new orange star brand identity.
+Streamline the QRPass attendance verifier interface by eliminating demo credentials and mock identifier labels, while implementing selectable client-side pagination for both the group breakdown cards and the detailed attendee report table.
 
 ---
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> The following architectural and product decisions were confirmed during the planning phase:
+> The following parameters were confirmed during clarification and will govern the pagination and cleanup implementation:
 
-- **Confirmed Decision 1 (Brand & Identity)**: Renamed to **QRPass** featuring the custom orange geometric star brand mark. All internal infrastructure mentions (Cloudflare, D1, SQLite) are removed in favor of clean, professional branding.
-- **Confirmed Decision 2 (Role-Based Access & Individual Logins)**:
-  - **Admin**: Master login (`admin`) with exclusive permissions to create events/sessions, manage attendees (add, delete, bulk CSV import), create and manage supervisor accounts, and manage security keys.
-  - **Supervisor / Operator**: Individual accounts (username and password) that log in directly. Supervisors can select any active event, access the high-performance camera scanner (with start and stop controls), and view group attendance reports.
-- **Confirmed Decision 3 (Supervisor Audit Trail)**: When a supervisor marks an attendee present, the record permanently stores `verified_by_id` and `verified_by_name`. Reports and CSV exports explicitly show which supervisor approved/verified each attendee.
-- **Confirmed Decision 4 (Concurrent Multi-Supervisor Sync)**: Real-time background sync (polling every 3–4 seconds with optimistic local UI updates) ensures all supervisors stationed across different entry gates or doors see updated headcounts and never duplicate check-ins.
-- **Confirmed Decision 5 (PWA & Mobile Installability)**: Full PWA support with Web App Manifest, Service Worker for asset caching, 192px/512px icons, apple-touch-icon, and a non-intrusive In-App Install button with iOS Safari instructions.
+- **Confirmed Decision (Groups Pagination)**: 6 group cards per page by default, with selectable page sizes of **4, 6, 12, or All**.
+- **Confirmed Decision (Attendee Table Pagination)**: 15 attendees per page by default, with selectable page sizes of **10, 15, 25, 50, or All**.
+- **Confirmed Decision (Demo Data Removal)**: Remove all quick-login demo accounts (`Alex`, `Jordan`, `Administrator`) from the login modal, and remove demo badge labels (`1234 (John Doe)`, `104829 (Maria Santos)`) from the scanner lookup card.
+- **Confirmed Decision (Real-Time State Retention)**: Background live synchronization (every 3 seconds) will update attendance metrics and records in-place without resetting or jumping the user's current page position.
 
 ---
 
 ## 1. Overview & Core Concept
 
-- **What It Does**: QRPass is a mobile-first badge verification and check-in PWA. Supervisors log into their individual accounts on their phones or tablets, select an event, and scan attendee QR codes. The app displays an instant confirmation card, stamps the supervisor's name on the attendance record, updates live headcounts across all active supervisor devices, and generates real-time group reports.
-- **Primary Users**: Supervisors, receptionists, event coordinators, and security operators operating mobile phones and tablets at doors, gates, or registration desks.
-- **Key Value**: Enables multiple team members to manage check-ins concurrently without collisions, provides transparent supervisor accountability, and runs reliably as an installed home-screen app on iOS and Android.
+- **What It Does**: Transitions the QRPass application into a production-clean utility. It removes clutter, example accounts, and mock badge numbers so operators experience an authentic corporate/event check-in environment. It introduces independent, selectable pagination bars for both the high-level group progress cards and the granular attendee reporting table, making large rosters (500+ attendees across dozens of groups) easy to inspect.
+- **Target Audience / Persona**: Gate supervisors, event managers, and corporate security operators scanning badges and monitoring check-in progress on desktop or mobile.
+- **Key Value**: Clean visual hierarchy, zero confusing demo clutter, and responsive navigation across large rosters without performance degradation or table overflow.
 
 ---
 
 ## 2. User Experience & Visual Design
 
-### A. Mobile-First Layout & Touch Ergonomics
+### Key User Flows
 
-- **Mobile Viewport Priority**: Designed for one-handed thumb interaction with $\ge 44\text{px}$ touch targets, sticky bottom navigation or clean top header tabs, and high-contrast status feedback.
-- **Scanner View**:
-  - Live camera viewport with high-visibility scan reticle.
-  - Dedicated **Start Camera** and **Stop Camera** action buttons.
-  - Fast camera switcher (front/back camera).
-  - Audio toggle for noisy environments.
-  - Quick manual search / paste drawer for scratched or unreadable badges.
-- **Confirmation Popup (Modal)**:
-  - Surfaces immediately upon QR detection without lag.
-  - Large attendee name, group badge, and identifier.
-  - Prominent **Mark Present** confirmation button styled with high-contrast emerald green (`#126e62`).
-  - Stamped with the current supervisor's name ("Verifying as: Supervisor John").
-- **Group Reports View**:
-  - Top summary cards: Total Enrolled, Present, Missing, % Attendance Rate.
-  - Group progress bars showing real-time fill rates.
-  - Filterable attendee table showing: Name, Identifier, Group, Status, Time, and **Verified By (Supervisor Name)**.
-  - One-click CSV export containing the full supervisor audit trail.
-- **Roster & Event Management (Admin Only)**:
-  - Gated behind Admin credentials.
-  - Add Person form, Bulk CSV upload + paste preview, and Session creation.
-  - Supervisor Accounts Manager: create and manage supervisor logins.
+1. **Sign-In Flow**:
+   - Operator clicks the user profile button in the top header.
+   - Clean modal opens with standard username and password fields. No demo buttons, fake account chips, or development shortcuts.
+   - User signs in with their supervisor or administrator credentials cleanly.
 
-### B. Visual Identity & Brand Styling
+2. **Scanner & Manual Lookup Flow**:
+   - Operator points mobile camera at an attendee badge or navigates to manual lookup.
+   - The manual lookup form features a clean textarea with an unencumbered label and straightforward placeholder (`"Enter identifier number or paste QR code data"`).
+   - All sample badge labels (`Sample demo IDs: 1234...`) are removed.
 
-- **Brand Mark**: Vibrant geometric orange star (`#FF6B35`) paired with clean deep navy typography (`#12243a`).
-- **Color Discipline**:
-  - 60% Clean slate/white background (`#f3f6f9` canvas, `#ffffff` cards).
-  - 30% Structural borders and navy header (`#12243a`).
-  - 10% Accent budget: Emerald green (`#126e62`) for verified attendance; warm amber (`#d97706`) for missing alerts; vibrant orange (`#ff6b35`) for brand accents and active indicators.
-- **PWA Elements**: Standalone mobile display mode without browser address bars; custom orange star splash screen.
+3. **Report View — Group Breakdown Pagination**:
+   - KPI metrics row displays overall statistics at the top.
+   - Below the title, the group breakdown section renders up to 6 cards at a time.
+   - An intuitive toolbar provides:
+     - Group count indicator: `"Showing groups 1–6 of 18"`
+     - Selectable page size control: `Show: [4 | 6 (active) | 12 | All]`
+     - Pagination navigation: `[Previous] [1] [2] [3] [Next]` with active state styling.
+   - Clicking any group card filters the attendee list below, automatically setting the attendee table to Page 1 of that group.
+
+4. **Report View — Attendee Table Pagination**:
+   - The table renders the active page of attendees (default 15 rows).
+   - Below the table, an attendee pagination bar provides:
+     - Record range indicator: `"Showing attendees 1–15 of 500"`
+     - Selectable page size control: `Show: [10 | 15 (active) | 25 | 50 | All]`
+     - Page selector: `[Previous] [1] [2] ... [Next]`
+   - When searching, switching status filters (All / Missing / Present), or switching groups, the page resets to Page 1 while preserving the chosen page size.
+
+### Visual Identity & Theme
+- **Color Discipline**: Strict 60-30-10 distribution utilizing deep slate canvas (`#12243a`), crisp white card containers, and focused warm-orange accent (`#ff662a`) for active tabs, selected groups, and active pagination buttons.
+- **Typography**: Clean display sans paired with tabular numerals (`tabular-nums`) for all counts, timestamps, and page indices.
+- **Anti-Slop Restraint**: Zero static pill enclosures, no decorative pulsing dots, and no artificial metadata. Pagination buttons use crisp rectangular/subtle rounded-md controls (`py-1 px-2.5`) with visible active states.
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: Authentication & Session Token Strategy**:
-  - *Chosen Approach*: Lightweight HTTP cookie / token session authentication stored in SQLite `auth_sessions`.
-  - *Why*: Eliminates complex third-party auth dependencies; works seamlessly in both standalone PWA mode and mobile Safari/Chrome browsers without popup blocking.
-  - *Roles*: `admin` (full permissions) vs. `supervisor` (scanner & reports access only).
-- **Decision 2: Supervisor Audit Attribution**:
-  - *Chosen Approach*: Add `verified_by_user_id` and `verified_by_name` columns to `attendance_records`.
-  - *Why*: Directly satisfies the requirement to show on reports which supervisor verified each user, supporting multi-gate accountability.
-- **Decision 3: Multi-Supervisor Concurrency & Polling Sync**:
-  - *Chosen Approach*: Lightweight 3-second background polling + instant broadcast after local check-in.
-  - *Why*: Works natively across ephemeral containers, edge workers, and mobile browsers without requiring complex persistent WebSocket state servers, while maintaining $<3$s freshness across all devices.
-- **Decision 4: PWA Offline Shell Caching**:
-  - *Chosen Approach*: Cache-first strategy for static assets (HTML, CSS, JS, jsQR, icons) via Service Worker, with network-first for live scan & report APIs.
-  - *Why*: Guarantees instant app boot on mobile home screens even on spotty cellular connections.
+- **Decision 1: Client-Side Pagination vs. Server-Side Pagination**:
+  - *Chosen Approach*: Client-side slicing within `app.js` using the full dataset already returned by `/api/reports?sessionId=X`.
+  - *Why*: The `/api/reports` payload for 500–1000 attendees is only ~40–80KB. Keeping the full array in memory allows instant filtering by search term, status (Missing/Present), and group without additional server round-trips or loading spinners.
+  - *Trade-off*: Slicing happens in browser memory, which is instantaneous for datasets up to 10,000 attendees.
+
+- **Decision 2: Independent Pagination State for Groups and Attendees**:
+  - *Chosen Approach*: Maintain separate reactive state variables: `groupPage`, `groupPageSize`, `attendeePage`, and `attendeePageSize`.
+  - *Why*: A user browsing through group summaries should not be disrupted when changing pages in the attendee roster below, and vice versa.
+
+- **Decision 3: Non-Intrusive Live Sync Updates**:
+  - *Chosen Approach*: When `/api/reports` live-syncs every 3 seconds, update the backing dataset `currentReports` and re-render without modifying `attendeePage` (unless the total page count shrank below the current page).
+  - *Why*: Prevents annoying UI jumps where an operator is reviewing Page 3 of the attendee roster and gets thrown back to Page 1 every 3 seconds.
 
 ---
 
 ## 4. Technical Architecture & Data Strategy
 
-### System Architecture Diagram
-
 ```
-┌────────────────────────────────────────────────────────────────────────┐
-│                        QRPass Mobile PWA Client                        │
-│                                                                        │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │ Top Bar: Orange Star Brand · Active Event Dropdown · User Badge  │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-│                                                                        │
-│  ┌─────────────────────────┐ ┌──────────────────────┐ ┌──────────────┐ │
-│  │      Scanner View       │ │     Reports View     │ │ Admin Roster │ │
-│  │ [Start/Stop Camera]     │ │ [Live Group Headcount│ │ [Admin Only: │ │
-│  │ [Modal Confirmation]    │ │  + Verified By Column│ │  Roster/Bulk/│ │
-│  │                         │ │  + CSV Export]       │ │  Supervisors]│ │
-│  └────────────┬────────────┘ └──────────┬───────────┘ └──────┬───────┘ │
-│               │                         │                    │         │
-│  ┌────────────┴─────────────────────────┴────────────────────┴──────┐  │
-│  │ Service Worker (pwa-sw.js) & Manifest (manifest.json)            │  │
-│  │ • Offline Asset Precaching  • Install Prompt Flow ('beforeprompt')│  │
-│  └──────────────────────────────────────┬───────────────────────────┘  │
-└─────────────────────────────────────────┼──────────────────────────────┘
-                                          │ HTTPS JSON API
-                                          ▼
-┌────────────────────────────────────────────────────────────────────────┐
-│                        Node Server / Worker                            │
-│                                                                        │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │ Auth Middleware (Admin vs. Supervisor Session Tokens)            │  │
-│  ├──────────────────────────────────────────────────────────────────┤  │
-│  │ Endpoints:                                                       │  │
-│  │ • POST /api/auth/login        • POST /api/scan                   │  │
-│  │ • POST /api/auth/logout       • POST /api/attendance/mark        │  │
-│  │ • GET  /api/auth/me           • GET  /api/reports                │  │
-│  │ • GET/POST /api/supervisors   • GET/POST /api/persons            │  │
-│  │ • GET/POST /api/sessions      • POST /api/persons/bulk           │  │
-│  └──────────────────────────────────┬───────────────────────────────┘  │
-│                                     ▼                                  │
-│  ┌──────────────────────────────────────────────────────────────────┐  │
-│  │ Database Storage (SQLite / Cloudflare D1)                        │  │
-│  │ • users (id, username, password_hash, display_name, role)        │  │
-│  │ • sessions (id, name, is_active, created_at)                     │  │
-│  │ • persons (id, first_name, last_name, identifier_number, group)  │  │
-│  │ • attendance_records (+ verified_by_id, verified_by_name)        │  │
-│  │ • auth_sessions (token, user_id, expires_at)                     │  │
-│  └──────────────────────────────────────────────────────────────────┘  │
-└────────────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                      Client State                           │
+│  - currentReports: { session, total, present, groups, ... } │
+│  - groupPage: 1                                             │
+│  - groupPageSize: 6  (4, 6, 12, 'all')                      │
+│  - attendeePage: 1                                          │
+│  - attendeePageSize: 15 (10, 15, 25, 50, 'all')             │
+│  - activeReportFilter: 'all' | 'missing' | 'present'        │
+│  - activeReportGroup: string                                │
+│  - activeReportSearch: string                               │
+└──────────────────────────────┬──────────────────────────────┘
+                               │
+               ┌───────────────┴───────────────┐
+               ▼                               ▼
+┌─────────────────────────────┐ ┌─────────────────────────────┐
+│    Group Cards Component    │ │    Attendee Table Component │
+│ - Slice groups[start:end]   │ │ - Filter by status & search │
+│ - Render progress cards     │ │ - Slice attendees[start:end]│
+│ - Render group pagination   │ │ - Render table rows         │
+│   controls & page size      │ │ - Render attendee pagination│
+│   selector                  │ │   controls & page size      │
+└─────────────────────────────┘ └─────────────────────────────┘
 ```
 
-### Database Schema Expansion (`migrations/0004_supervisors_and_pwa.sql`)
+### Component & DOM Changes
 
-```sql
--- Users and Supervisors table
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT NOT NULL UNIQUE,
-  password_hash TEXT NOT NULL,
-  display_name TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('admin', 'supervisor')),
-  created_at INTEGER NOT NULL
-);
+1. **`public/index.html`**:
+   - In `#view-scanner`: Remove sample IDs `1234 (John Doe), 104829 (Maria Santos)` and clean the hint text.
+   - In `#view-reports`:
+     - Add `#group-pagination-bar` below `#group-cards-container`.
+     - Add `#attendee-pagination-bar` below `#report-table-body` wrapper.
+   - In `#modal-login`: Remove `.demo-login-box` containing the quick-sign-in buttons.
 
--- Active user sessions for PWA tokens
-CREATE TABLE IF NOT EXISTS user_tokens (
-  token TEXT PRIMARY KEY,
-  user_id INTEGER NOT NULL,
-  created_at INTEGER NOT NULL,
-  expires_at INTEGER NOT NULL,
-  FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
-);
+2. **`public/style.css`**:
+   - Add styles for `.pagination-bar`, `.pagination-info`, `.pagination-pages`, `.page-btn`, `.page-size-selector`, and `.page-btn.active`.
+   - Ensure touch-friendly sizes ($\ge 40\text{px}$ touch targets on mobile) and graceful responsive wrapping.
 
--- Upgrade attendance records with supervisor attribution
-ALTER TABLE attendance_records ADD COLUMN verified_by_name TEXT;
-ALTER TABLE attendance_records ADD COLUMN verified_by_id INTEGER;
-
--- Seed default supervisor account if none exists (admin / supervisor1)
-INSERT OR IGNORE INTO users (id, username, password_hash, display_name, role, created_at)
-VALUES (1, 'admin', '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918', 'Administrator', 'admin', 1700000000);
-
-INSERT OR IGNORE INTO users (id, username, password_hash, display_name, role, created_at)
-VALUES (2, 'supervisor1', '8c6976e5b5410415bde908bd4dee15dfb167a9c873fc4bb8a81f6f2ab448a918', 'Supervisor Alex', 'supervisor', 1700000000);
-```
-
----
-
-## 5. Execution Steps
-
-1. **Brand Assets & Icons**:
-   - Generate vector SVG and high-resolution PNG icons (192x192, 512x512, apple-touch-icon) matching the uploaded orange star logo.
-   - Configure `manifest.json` with name `QRPass`, short name `QRPass`, theme color `#12243a`, background `#ffffff`, and `display: standalone`.
-2. **Database Migration & Auth Service**:
-   - Create `migrations/0004_supervisors_and_pwa.sql`.
-   - Update `server.js` and `src/worker.js` to execute the migration and seed default admin (`admin` / `admin`) and sample supervisor (`supervisor1` / `admin`).
-   - Implement `/api/auth/login`, `/api/auth/logout`, `/api/auth/me`, and `/api/supervisors`.
-3. **Attendee Verification with Supervisor Attribution**:
-   - Update `/api/attendance/mark` and `/api/attendance/toggle` to capture the authenticated supervisor's ID and display name.
-   - Update `/api/reports` to output `verifiedByName` and include it in CSV exports.
-4. **PWA Service Worker & Install Flow**:
-   - Create `public/sw.js` for caching shell assets.
-   - Add in-app install prompt banner handling `beforeinstallprompt` with iOS Safari instructions.
-5. **Mobile-First UI & Camera Controls**:
-   - Add explicit **Stop Camera** button alongside **Start Camera**.
-   - Style role-aware navigation: Supervisors see `Scanner` and `Reports`; Admin sees `Scanner`, `Reports`, `Roster`, `Supervisors`, and `Settings`.
-   - Clean all footers and headers of Cloudflare, D1, or SQLite technical mentions.
-6. **Testing & Verification**:
-   - Unit tests covering authentication, supervisor creation, scan attribution, and report generation.
-   - Compilation and lint checks via `compile_applet` and `lint_applet`.
+3. **`public/app.js`**:
+   - Initialize pagination state variables.
+   - Update `renderReports()` to slice groups according to `groupPage` and `groupPageSize`, and render group pagination buttons.
+   - Update `renderReportTable()` to filter attendees, slice according to `attendeePage` and `attendeePageSize`, and render attendee pagination buttons.
+   - Add event handlers for page size dropdowns/buttons and page navigation.
+   - Remove dead event listeners for demo accounts.
