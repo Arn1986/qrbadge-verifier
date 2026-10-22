@@ -1,28 +1,29 @@
-# Authentication Gateway & Profile Management Implementation Plan
+# Mandatory Authentication Gateway & Profile Management Plan
 
-Upgrade QRPass with a mandatory full-screen login gateway that prevents access to the application until valid credentials are provided, paired with a user profile dropdown featuring Switch Account and Sign Out capabilities.
+Upgrade QRPass with a full-screen mandatory login gateway that prevents access to the application until valid credentials are provided, maintains sessions across reloads until explicit sign out, displays inline error alerts on failure, and features a user profile dropdown with Switch Account and Sign Out in the header.
 
 ---
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> The following design choices were confirmed during clarification and will govern the implementation:
+> The following parameters were confirmed by the user and govern the implementation:
 
-- **Confirmed Decision (Authentication Gateway)**: A dedicated full-screen login view is displayed when opening the app while unauthenticated. Header navigation and application tools (scanner, reports, roster) remain completely hidden until sign-in succeeds.
+- **Confirmed Decision (Authentication Gateway)**: A dedicated full-screen login view is displayed when opening the web app while unauthenticated. Header navigation and application tools (scanner, reports, roster) remain completely hidden until sign-in succeeds.
+- **Confirmed Decision (Session Persistence)**: Legitimate sessions stay signed in across browser reloads and app restarts until the user explicitly clicks **Sign Out**.
+- **Confirmed Decision (Error Indication)**: Invalid login attempts display a clear inline error banner directly inside the login card, preventing access without disturbing layout stability.
 - **Confirmed Decision (Header Profile Dropdown)**: The user badge in the top header is upgraded to an interactive profile dropdown menu containing:
-  - Active user identity header (Display Name & Role Badge).
-  - **Switch Account** option (allows switching credentials without resetting general event state).
-  - **Sign Out** option (invalidates token, stops camera stream, clears local session, and returns directly to the full-screen login screen).
-- **Confirmed Decision (Session Persistence)**: Legitimate sessions verified via token are restored seamlessly on page reload; if token is missing or expired, the full-screen login gate appears immediately.
+  - User identity summary (Display Name and Role Tag).
+  - **Switch Account** option (opens credential modal to switch operator without clearing active event context).
+  - **Sign Out** option (invalidates token, stops camera streams, clears local session, and immediately displays the full-screen login gate).
 
 ---
 
 ## 1. Overview & Core Concept
 
-- **What It Does**: Establishes a true enterprise security boundary for QRPass. Rather than allowing unauthenticated visitors to view the camera scanner or reports in the background, the application presents a focused, brand-aligned login gate. Once authenticated, operators access the tools with clear attribution. Users can switch operators on shared gate tablets or cleanly sign out when their shift concludes.
-- **Target Audience / Persona**: Gate supervisors and system administrators using mobile phones, tablets, or desktop stations at event entrances.
-- **Key Value**: Security enforcement, prevention of unauthorized check-ins, transparent shift handoffs, and shift sign-outs.
+- **What It Does**: Establishes an authentic enterprise security boundary. Opening the application requires entering authorized supervisor or administrator credentials. Unauthenticated visitors cannot see event rosters, active reports, or the camera scanner. Once authenticated, the operator's identity and role are pinned to the session. Operators can switch accounts during shift handoffs or sign out completely when their work is finished.
+- **Target Audience / Persona**: Gate supervisors, event staff, and corporate security operators validating badges at entrances.
+- **Key Value**: Guarantees zero unauthenticated access, clear audit attribution, frictionless shift changes, and clean single-click sign-outs.
 
 ---
 
@@ -30,48 +31,52 @@ Upgrade QRPass with a mandatory full-screen login gateway that prevents access t
 
 ### Key User Flows
 
-1. **First-Time / Unauthenticated Access**:
-   - Visitor navigates to the app URL.
-   - The top header navigation, tabs, and main application shell remain hidden.
+1. **Unauthenticated Gateway Flow**:
+   - Operator visits the app URL.
+   - If no valid session exists, the top navigation, tabs, and main application shell remain completely hidden (`display: none`).
    - A centered, full-screen card appears featuring:
      - The orange geometric star brand mark and `"QRPass"` wordmark.
-     - Subtitle: `"Sign in with your supervisor or administrator credentials to start verifying attendees."`
-     - Clean Username and Password inputs.
-     - Primary `"Sign In"` button.
-   - If incorrect credentials are submitted, an inline error banner appears (`"Invalid username or password"`). Access remains strictly blocked.
-   - Upon successful authentication, the login gate smoothly fades out, revealing the top bar, active event selector, and role-appropriate navigation tabs (Scanner & Reports for supervisors; Roster, Supervisors, and Admin for administrators).
+     - Title: `"Sign In"`
+     - Subtitle: `"Enter your supervisor or administrator credentials to begin."`
+     - Username and Password input fields.
+     - Inline error container (rendered if credentials fail: `"Invalid username or password"`).
+     - Primary `"Sign In"` button with active loading state.
+   - If invalid credentials are submitted, the error banner appears inline and the password field is cleared and focused. Access is strictly blocked.
+   - Upon valid authentication, the gate smoothly transitions into the application workspace.
 
-2. **User Profile Dropdown Navigation**:
-   - In the top header, the user chip displays an avatar icon (`👤`), operator name (e.g., `"Supervisor Alex"`), role badge, and a caret (`▾`).
-   - Clicking toggles an accessible dropdown menu:
-     - **Profile Header**: Shows full name, role, and current session status.
-     - **Switch Account**: Opens a modal to sign into a different operator or admin account without clearing active event context.
-     - **Sign Out**: Calls `/api/auth/logout`, stops active camera video feeds, clears cached tokens, and returns directly to the full-screen login gate.
-   - Outside click or `Escape` key closes the dropdown cleanly.
+2. **Authenticated Workspace & Session Persistence**:
+   - The user enters the app with full privileges according to their role.
+   - Reloading the page or reopening the PWA re-verifies the stored token against `/api/auth/me` without requiring re-entry of passwords.
+   - In the top header, the user badge features an avatar icon (`👤`), operator name, role badge, and a caret (`▾`).
 
-3. **Active Session Restore**:
-   - Returning to the app with a valid token stored in `localStorage` checks `/api/auth/me`. If valid, the user directly enters the workspace without delay. If invalid or revoked, the login screen is displayed.
+3. **User Profile Dropdown Flow**:
+   - Clicking the user profile badge toggles a clean dropdown menu:
+     - **Profile Header**: Operator display name, username, and role badge (`SUPERVISOR` or `ADMIN`).
+     - **Switch Account**: Opens a modal to enter credentials for another account without losing the current event filter.
+     - **Sign Out**: Calls `/api/auth/logout`, shuts down camera video hardware tracks, deletes local tokens, and immediately transitions back to the full-screen login gate.
+   - Pressing `Escape` or clicking anywhere outside automatically closes the dropdown.
 
 ### Visual Identity & Theme
-- **Color Discipline**: Strict 60-30-10 palette using deep canvas (`#12243a`), crisp card surface (`#ffffff`), subtle borders (`#d9e2ec`), and high-intent orange accent (`#ff662a`).
-- **Typography**: Clean display sans with tabular figures (`tabular-nums`) for numeric data.
-- **Micro-Interactions**: Dropdown menu opens with a subtle 150ms settling slide (`cubic-bezier(0.16, 1, 0.3, 1)`), visible focus rings for accessibility, and smooth state transitions.
+- **Color Discipline**: Strict 60-30-10 palette using deep canvas (`#12243a`), crisp white card containers (`#ffffff`), subtle borders (`#d9e2ec`), and focused warm-orange accent (`#ff662a`).
+- **Typography**: Clean display sans paired with tabular numerals (`tabular-nums`) for numeric data.
+- **Zero-Pill Restraint**: Unboxed metadata, clean dropdown separators, and standard rectangular buttons with subtle rounded corners (`border-radius: 6px`).
+- **Micro-Interactions**: Dropdown menu opens with a smooth 150ms slide-fade (`cubic-bezier(0.16, 1, 0.3, 1)`).
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: Full-Screen Gateway vs. Dismissible Modal Overlay**:
-  - *Chosen Approach*: Full-screen standalone gate (`#auth-gate`) that wraps the login form and hides the `<header>` and `<main>` shells.
-  - *Why*: Modal overlays can accidentally be dismissed by clicking outside, pressing Escape, or inspecting DOM elements, exposing interface controls. Hiding the application shell until `currentUser` is populated guarantees zero accidental exposure of event rosters or scanner controls.
+- **Decision 1: Full-Screen Gateway Container vs. Modal Overlay**:
+  - *Chosen Approach*: Full-screen standalone view (`#auth-gate`) that hides `<header>` and `<main>` completely.
+  - *Why*: A modal overlay can be dismissed by pressing Escape or clicking a backdrop, which could accidentally leak event data. Completely hiding the application DOM until `currentUser` is confirmed guarantees strict access control.
 
-- **Decision 2: Dropdown Menu vs. Multiple Header Buttons**:
-  - *Chosen Approach*: Single interactive profile button triggering a dropdown menu with both Switch Account and Sign Out actions.
-  - *Why*: Conserves critical horizontal space on mobile screens (where multiple buttons cause wrapping or clip the event selector), adhering to the top-bar spatial contract.
+- **Decision 2: Dropdown Menu vs. Dispersed Header Buttons**:
+  - *Chosen Approach*: Single interactive profile trigger housing both Switch Account and Sign Out in an accessible dropdown.
+  - *Why*: Preserves horizontal space on mobile phones where multiple header buttons cause awkward wrapping or push the event selector off-screen.
 
-- **Decision 3: Complete Hardware & Stream Cleanup on Sign Out**:
-  - *Chosen Approach*: `stopCamera()` is invoked upon sign out, terminating media tracks and releasing camera hardware immediately.
-  - *Why*: Prevents mobile camera indicator lights from staying active when an operator signs out.
+- **Decision 3: Complete Hardware Stream Teardown on Sign Out**:
+  - *Chosen Approach*: Call `stopCamera()` upon sign-out, stopping media stream tracks.
+  - *Why*: Prevents mobile camera indicator lights from staying active in the background when an operator signs out.
 
 ---
 
@@ -79,7 +84,7 @@ Upgrade QRPass with a mandatory full-screen login gateway that prevents access t
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                       App Boot Lifecycle                    │
+│                      App Boot Sequence                      │
 │                                                             │
 │  1. Check localStorage for qrpass_auth_token                │
 │     ├── Token present ──> GET /api/auth/me                  │
@@ -91,32 +96,30 @@ Upgrade QRPass with a mandatory full-screen login gateway that prevents access t
                ┌───────────────┴───────────────┐
                ▼                               ▼
 ┌─────────────────────────────┐ ┌─────────────────────────────┐
-│      #auth-gate (Locked)    │ │   Application Workspace     │
-│ - Top header hidden         │ │ - Header & Nav tabs visible │
-│ - Main shell hidden         │ │ - Role-based tab filtering  │
-│ - Mandatory credentials     │ │ - User Profile Dropdown:    │
-│ - Error feedback banner     │ │    ├── Switch Account       │
-│ - On success: showApp()     │ │    └── Sign Out -> Gate     │
+│     #auth-gate (Full Screen)│ │    Application Workspace    │
+│ - <header> hidden           │ │ - <header> & <main> visible │
+│ - <main> hidden             │ │ - Role-based tab filtering  │
+│ - Mandatory form            │ │ - Profile Dropdown:         │
+│ - Inline error alert banner │ │    ├── Switch Account       │
+│ - Validates /api/auth/login │ │    └── Sign Out -> Gate     │
 └─────────────────────────────┘ └─────────────────────────────┘
 ```
 
 ### Component & DOM Changes
 
 1. **`public/index.html`**:
-   - Add `#auth-gate` section containing the full-screen branded login card before `<header>`.
-   - Update `#user-badge-container` in `<header>` to an interactive button with a dropdown container (`#user-profile-menu`) containing:
-     - User details header.
-     - `#menu-btn-switch-account` (Switch Account).
-     - `#menu-btn-sign-out` (Sign Out).
-   - Retain `#modal-login` specifically for the "Switch Account" dialog while inside the workspace.
+   - Add `#auth-gate` section directly before `<header>`, containing the full-screen branded login card, form (`#form-gate-login`), and inline error alert (`#gate-login-error`).
+   - Update `#user-badge-container` in `<header>` into an accessible interactive dropdown button with `#profile-dropdown-menu`.
+   - Update `#modal-login` specifically for the "Switch Account" dialog inside the workspace.
 
 2. **`public/style.css`**:
-   - Add styles for `.auth-gate`, `.auth-card`, and responsive centering.
-   - Add styles for `.profile-dropdown-wrapper`, `.profile-menu`, `.profile-menu-header`, and `.profile-menu-item`.
-   - Ensure mobile touch targets ($\ge 44\text{px}$) and clear hover/focus states.
+   - Add layout and typography rules for `#auth-gate`, `.auth-card`, and `.auth-error-banner`.
+   - Add styles for `.profile-dropdown`, `.profile-menu`, `.profile-menu-header`, and `.profile-menu-item`.
+   - Ensure responsive touch targets ($\ge 44\text{px}$) on mobile devices.
 
 3. **`public/app.js`**:
-   - Implement `showAuthGate()` and `showApp()`.
-   - Wire the `#form-gate-login` submit handler with error messaging and transition into `showApp()`.
+   - Add `showAuthGate()` and `showApp()`.
+   - Wire `#form-gate-login` submit handler: verifies credentials against `/api/auth/login`, sets token, updates state, and calls `showApp()`. On failure, displays the inline error banner.
    - Wire profile dropdown toggle, outside click dismissal, and escape key listener.
-   - Wire `Sign Out`: calls `/api/auth/logout`, terminates camera stream, wipes token, and triggers `showAuthGate()`.
+   - Wire `Sign Out` button: calls `/api/auth/logout`, terminates active camera streams, clears token, and triggers `showAuthGate()`.
+   - Wire `Switch Account` button: opens the switch account dialog.

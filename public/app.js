@@ -42,10 +42,26 @@
   const syncStatusText = document.querySelector('#sync-status-text');
   const offlineBanner = document.querySelector('#offline-banner');
 
-  // User & Header Elements
+  // Auth Gateway & Application Shell Containers
+  const authGate = document.querySelector('#auth-gate');
+  const appHeader = document.querySelector('#app-header');
+  const appMain = document.querySelector('#app-main');
+  const appFooter = document.querySelector('#app-footer');
+  const formGateLogin = document.querySelector('#form-gate-login');
+  const gateUsername = document.querySelector('#gate-username');
+  const gatePassword = document.querySelector('#gate-password');
+  const gateError = document.querySelector('#gate-error');
+  const btnGateSubmit = document.querySelector('#btn-gate-submit');
+
+  // User Profile & Header Elements
   const userDisplayName = document.querySelector('#user-display-name');
   const userRoleBadge = document.querySelector('#user-role-badge');
-  const btnSwitchUser = document.querySelector('#btn-switch-user');
+  const btnUserProfile = document.querySelector('#btn-user-profile');
+  const userProfileMenu = document.querySelector('#user-profile-menu');
+  const menuUserName = document.querySelector('#menu-user-name');
+  const menuUserRole = document.querySelector('#menu-user-role');
+  const menuBtnSwitchAccount = document.querySelector('#menu-btn-switch-account');
+  const menuBtnSignOut = document.querySelector('#menu-btn-sign-out');
   const btnInstallPwa = document.querySelector('#btn-install-pwa');
   const btnOpenSessionModal = document.querySelector('#btn-open-session-modal');
 
@@ -103,6 +119,11 @@
     if (!res.ok) {
       const err = new Error(data.error || 'Request failed');
       err.status = res.status;
+      if (res.status === 401 && path !== '/api/auth/login') {
+        setAuthToken('');
+        stopCamera();
+        showAuthGate();
+      }
       throw err;
     }
     return data;
@@ -141,15 +162,47 @@
   }
 
   // -------------------------------------------------------------
-  // AUTHENTICATION & ROLE MANAGEMENT
   // -------------------------------------------------------------
+  // AUTHENTICATION & ACCESS CONTROL
+  // -------------------------------------------------------------
+  function showAuthGate() {
+    currentUser = null;
+    if (authGate) authGate.hidden = false;
+    if (appHeader) appHeader.hidden = true;
+    if (appMain) appMain.hidden = true;
+    if (appFooter) appFooter.hidden = true;
+    closeProfileMenu();
+    closeLoginModal();
+    if (gateError) {
+      gateError.hidden = true;
+      gateError.textContent = '';
+    }
+    if (formGateLogin) {
+      formGateLogin.reset();
+    }
+    setTimeout(() => {
+      gateUsername?.focus();
+    }, 80);
+  }
+
+  function showApp(user) {
+    if (authGate) authGate.hidden = true;
+    if (appHeader) appHeader.hidden = false;
+    if (appMain) appMain.hidden = false;
+    if (appFooter) appFooter.hidden = false;
+    setUser(user);
+    loadSessions();
+    updateCameras();
+    loadReports();
+  }
+
   async function initAuth() {
     const token = getAuthToken();
     if (token) {
       try {
         const data = await api('/api/auth/me');
         if (data.user) {
-          setUser(data.user);
+          showApp(data.user);
           return;
         }
       } catch {
@@ -157,21 +210,26 @@
       }
     }
 
-    // Show clean login modal if no authenticated session exists
-    openLoginModal();
+    // Default: mandatory full-screen login gate when unauthenticated
+    showAuthGate();
   }
 
   function setUser(user) {
     currentUser = user;
-    userDisplayName.textContent = user.displayName || user.username;
-    userRoleBadge.textContent = (user.role || 'supervisor').toUpperCase();
+    const name = user.displayName || user.username;
+    const role = (user.role || 'supervisor').toUpperCase();
+
+    if (userDisplayName) userDisplayName.textContent = name;
+    if (userRoleBadge) userRoleBadge.textContent = role;
+    if (menuUserName) menuUserName.textContent = name;
+    if (menuUserRole) menuUserRole.textContent = `${role} • Active Session`;
 
     if (user.role === 'admin') {
-      userRoleBadge.style.background = '#106356';
+      if (userRoleBadge) userRoleBadge.style.background = '#106356';
       document.querySelectorAll('.admin-only').forEach(el => el.hidden = false);
       if (btnOpenSessionModal) btnOpenSessionModal.hidden = false;
     } else {
-      userRoleBadge.style.background = '#ff662a';
+      if (userRoleBadge) userRoleBadge.style.background = '#ff662a';
       document.querySelectorAll('.admin-only').forEach(el => el.hidden = true);
       if (btnOpenSessionModal) btnOpenSessionModal.hidden = true;
 
@@ -183,6 +241,106 @@
     }
   }
 
+  // Profile Dropdown Controls
+  function toggleProfileMenu() {
+    if (!userProfileMenu) return;
+    const isClosed = userProfileMenu.hidden;
+    if (isClosed) {
+      userProfileMenu.hidden = false;
+      btnUserProfile?.setAttribute('aria-expanded', 'true');
+    } else {
+      closeProfileMenu();
+    }
+  }
+
+  function closeProfileMenu() {
+    if (!userProfileMenu) return;
+    userProfileMenu.hidden = true;
+    btnUserProfile?.setAttribute('aria-expanded', 'false');
+  }
+
+  btnUserProfile?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    toggleProfileMenu();
+  });
+
+  menuBtnSwitchAccount?.addEventListener('click', () => {
+    closeProfileMenu();
+    openLoginModal();
+  });
+
+  menuBtnSignOut?.addEventListener('click', () => {
+    handleSignOut();
+  });
+
+  // Global dismiss handlers for dropdown menu
+  document.addEventListener('click', (e) => {
+    if (userProfileMenu && !userProfileMenu.hidden) {
+      if (!e.target.closest('.profile-dropdown-wrapper')) {
+        closeProfileMenu();
+      }
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeProfileMenu();
+      closeLoginModal();
+    }
+  });
+
+  async function handleSignOut() {
+    closeProfileMenu();
+    try {
+      await api('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    } catch {
+      // Ignore network errors on signout
+    }
+    stopCamera();
+    setAuthToken('');
+    showAuthGate();
+    showToast('Signed out successfully', 'info');
+  }
+
+  // Full-Screen Login Gate Form Submit
+  formGateLogin?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const username = gateUsername?.value.trim();
+    const password = gatePassword?.value.trim();
+    if (!username || !password) return;
+
+    if (btnGateSubmit) {
+      btnGateSubmit.disabled = true;
+      btnGateSubmit.textContent = 'Signing in...';
+    }
+    if (gateError) {
+      gateError.hidden = true;
+      gateError.textContent = '';
+    }
+
+    try {
+      const data = await api('/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ username, password })
+      });
+      setAuthToken(data.token);
+      showApp(data.user);
+      showToast(`Welcome back, ${data.user.displayName}`, 'success');
+    } catch (err) {
+      if (gateError) {
+        gateError.textContent = err.message || 'Invalid username or password.';
+        gateError.hidden = false;
+      }
+      gatePassword?.select();
+    } finally {
+      if (btnGateSubmit) {
+        btnGateSubmit.disabled = false;
+        btnGateSubmit.textContent = 'Sign In to QRPass';
+      }
+    }
+  });
+
+  // Switch Account In-App Modal
   function openLoginModal() {
     modalLogin.hidden = false;
     loginUsernameInput.focus();
@@ -192,7 +350,6 @@
     modalLogin.hidden = true;
   }
 
-  btnSwitchUser?.addEventListener('click', openLoginModal);
   modalLoginClose?.addEventListener('click', closeLoginModal);
   modalLoginCancel?.addEventListener('click', closeLoginModal);
 
@@ -208,12 +365,10 @@
         body: JSON.stringify({ username, password })
       });
       setAuthToken(data.token);
-      setUser(data.user);
       closeLoginModal();
       formLogin.reset();
-      showToast(`Logged in as ${data.user.displayName}`, 'success');
-      loadSessions();
-      loadReports();
+      showApp(data.user);
+      showToast(`Switched account to ${data.user.displayName}`, 'success');
     } catch (err) {
       showToast(err.message, 'error');
     }
@@ -1584,7 +1739,7 @@
     if (syncTimer) clearInterval(syncTimer);
     // Auto-sync scans every 3.5 seconds across gates
     syncTimer = setInterval(() => {
-      if (!navigator.onLine) return;
+      if (!navigator.onLine || !currentUser) return;
       const activeTab = document.querySelector('.nav-tab.active')?.dataset.tab;
       if (activeTab === 'scanner' || activeTab === 'reports') {
         loadReports(true);
@@ -1615,9 +1770,7 @@
 
   // Initialization sequence
   initTabs();
-  initAuth();
-  loadSessions();
-  updateCameras();
   initPWA();
+  initAuth();
   startSyncLoop();
 })();
