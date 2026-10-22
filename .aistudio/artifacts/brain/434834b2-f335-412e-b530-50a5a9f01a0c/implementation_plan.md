@@ -1,26 +1,28 @@
-# Clean Interface & Dual-Level Pagination Implementation Plan
+# Authentication Gateway & Profile Management Implementation Plan
 
-Streamline the QRPass attendance verifier interface by eliminating demo credentials and mock identifier labels, while implementing selectable client-side pagination for both the group breakdown cards and the detailed attendee report table.
+Upgrade QRPass with a mandatory full-screen login gateway that prevents access to the application until valid credentials are provided, paired with a user profile dropdown featuring Switch Account and Sign Out capabilities.
 
 ---
 
 ## User Review & Critical Decisions
 
 > [!IMPORTANT]
-> The following parameters were confirmed during clarification and will govern the pagination and cleanup implementation:
+> The following design choices were confirmed during clarification and will govern the implementation:
 
-- **Confirmed Decision (Groups Pagination)**: 6 group cards per page by default, with selectable page sizes of **4, 6, 12, or All**.
-- **Confirmed Decision (Attendee Table Pagination)**: 15 attendees per page by default, with selectable page sizes of **10, 15, 25, 50, or All**.
-- **Confirmed Decision (Demo Data Removal)**: Remove all quick-login demo accounts (`Alex`, `Jordan`, `Administrator`) from the login modal, and remove demo badge labels (`1234 (John Doe)`, `104829 (Maria Santos)`) from the scanner lookup card.
-- **Confirmed Decision (Real-Time State Retention)**: Background live synchronization (every 3 seconds) will update attendance metrics and records in-place without resetting or jumping the user's current page position.
+- **Confirmed Decision (Authentication Gateway)**: A dedicated full-screen login view is displayed when opening the app while unauthenticated. Header navigation and application tools (scanner, reports, roster) remain completely hidden until sign-in succeeds.
+- **Confirmed Decision (Header Profile Dropdown)**: The user badge in the top header is upgraded to an interactive profile dropdown menu containing:
+  - Active user identity header (Display Name & Role Badge).
+  - **Switch Account** option (allows switching credentials without resetting general event state).
+  - **Sign Out** option (invalidates token, stops camera stream, clears local session, and returns directly to the full-screen login screen).
+- **Confirmed Decision (Session Persistence)**: Legitimate sessions verified via token are restored seamlessly on page reload; if token is missing or expired, the full-screen login gate appears immediately.
 
 ---
 
 ## 1. Overview & Core Concept
 
-- **What It Does**: Transitions the QRPass application into a production-clean utility. It removes clutter, example accounts, and mock badge numbers so operators experience an authentic corporate/event check-in environment. It introduces independent, selectable pagination bars for both the high-level group progress cards and the granular attendee reporting table, making large rosters (500+ attendees across dozens of groups) easy to inspect.
-- **Target Audience / Persona**: Gate supervisors, event managers, and corporate security operators scanning badges and monitoring check-in progress on desktop or mobile.
-- **Key Value**: Clean visual hierarchy, zero confusing demo clutter, and responsive navigation across large rosters without performance degradation or table overflow.
+- **What It Does**: Establishes a true enterprise security boundary for QRPass. Rather than allowing unauthenticated visitors to view the camera scanner or reports in the background, the application presents a focused, brand-aligned login gate. Once authenticated, operators access the tools with clear attribution. Users can switch operators on shared gate tablets or cleanly sign out when their shift concludes.
+- **Target Audience / Persona**: Gate supervisors and system administrators using mobile phones, tablets, or desktop stations at event entrances.
+- **Key Value**: Security enforcement, prevention of unauthorized check-ins, transparent shift handoffs, and shift sign-outs.
 
 ---
 
@@ -28,54 +30,48 @@ Streamline the QRPass attendance verifier interface by eliminating demo credenti
 
 ### Key User Flows
 
-1. **Sign-In Flow**:
-   - Operator clicks the user profile button in the top header.
-   - Clean modal opens with standard username and password fields. No demo buttons, fake account chips, or development shortcuts.
-   - User signs in with their supervisor or administrator credentials cleanly.
+1. **First-Time / Unauthenticated Access**:
+   - Visitor navigates to the app URL.
+   - The top header navigation, tabs, and main application shell remain hidden.
+   - A centered, full-screen card appears featuring:
+     - The orange geometric star brand mark and `"QRPass"` wordmark.
+     - Subtitle: `"Sign in with your supervisor or administrator credentials to start verifying attendees."`
+     - Clean Username and Password inputs.
+     - Primary `"Sign In"` button.
+   - If incorrect credentials are submitted, an inline error banner appears (`"Invalid username or password"`). Access remains strictly blocked.
+   - Upon successful authentication, the login gate smoothly fades out, revealing the top bar, active event selector, and role-appropriate navigation tabs (Scanner & Reports for supervisors; Roster, Supervisors, and Admin for administrators).
 
-2. **Scanner & Manual Lookup Flow**:
-   - Operator points mobile camera at an attendee badge or navigates to manual lookup.
-   - The manual lookup form features a clean textarea with an unencumbered label and straightforward placeholder (`"Enter identifier number or paste QR code data"`).
-   - All sample badge labels (`Sample demo IDs: 1234...`) are removed.
+2. **User Profile Dropdown Navigation**:
+   - In the top header, the user chip displays an avatar icon (`👤`), operator name (e.g., `"Supervisor Alex"`), role badge, and a caret (`▾`).
+   - Clicking toggles an accessible dropdown menu:
+     - **Profile Header**: Shows full name, role, and current session status.
+     - **Switch Account**: Opens a modal to sign into a different operator or admin account without clearing active event context.
+     - **Sign Out**: Calls `/api/auth/logout`, stops active camera video feeds, clears cached tokens, and returns directly to the full-screen login gate.
+   - Outside click or `Escape` key closes the dropdown cleanly.
 
-3. **Report View — Group Breakdown Pagination**:
-   - KPI metrics row displays overall statistics at the top.
-   - Below the title, the group breakdown section renders up to 6 cards at a time.
-   - An intuitive toolbar provides:
-     - Group count indicator: `"Showing groups 1–6 of 18"`
-     - Selectable page size control: `Show: [4 | 6 (active) | 12 | All]`
-     - Pagination navigation: `[Previous] [1] [2] [3] [Next]` with active state styling.
-   - Clicking any group card filters the attendee list below, automatically setting the attendee table to Page 1 of that group.
-
-4. **Report View — Attendee Table Pagination**:
-   - The table renders the active page of attendees (default 15 rows).
-   - Below the table, an attendee pagination bar provides:
-     - Record range indicator: `"Showing attendees 1–15 of 500"`
-     - Selectable page size control: `Show: [10 | 15 (active) | 25 | 50 | All]`
-     - Page selector: `[Previous] [1] [2] ... [Next]`
-   - When searching, switching status filters (All / Missing / Present), or switching groups, the page resets to Page 1 while preserving the chosen page size.
+3. **Active Session Restore**:
+   - Returning to the app with a valid token stored in `localStorage` checks `/api/auth/me`. If valid, the user directly enters the workspace without delay. If invalid or revoked, the login screen is displayed.
 
 ### Visual Identity & Theme
-- **Color Discipline**: Strict 60-30-10 distribution utilizing deep slate canvas (`#12243a`), crisp white card containers, and focused warm-orange accent (`#ff662a`) for active tabs, selected groups, and active pagination buttons.
-- **Typography**: Clean display sans paired with tabular numerals (`tabular-nums`) for all counts, timestamps, and page indices.
-- **Anti-Slop Restraint**: Zero static pill enclosures, no decorative pulsing dots, and no artificial metadata. Pagination buttons use crisp rectangular/subtle rounded-md controls (`py-1 px-2.5`) with visible active states.
+- **Color Discipline**: Strict 60-30-10 palette using deep canvas (`#12243a`), crisp card surface (`#ffffff`), subtle borders (`#d9e2ec`), and high-intent orange accent (`#ff662a`).
+- **Typography**: Clean display sans with tabular figures (`tabular-nums`) for numeric data.
+- **Micro-Interactions**: Dropdown menu opens with a subtle 150ms settling slide (`cubic-bezier(0.16, 1, 0.3, 1)`), visible focus rings for accessibility, and smooth state transitions.
 
 ---
 
 ## 3. Key Product Decisions & Trade-Offs
 
-- **Decision 1: Client-Side Pagination vs. Server-Side Pagination**:
-  - *Chosen Approach*: Client-side slicing within `app.js` using the full dataset already returned by `/api/reports?sessionId=X`.
-  - *Why*: The `/api/reports` payload for 500–1000 attendees is only ~40–80KB. Keeping the full array in memory allows instant filtering by search term, status (Missing/Present), and group without additional server round-trips or loading spinners.
-  - *Trade-off*: Slicing happens in browser memory, which is instantaneous for datasets up to 10,000 attendees.
+- **Decision 1: Full-Screen Gateway vs. Dismissible Modal Overlay**:
+  - *Chosen Approach*: Full-screen standalone gate (`#auth-gate`) that wraps the login form and hides the `<header>` and `<main>` shells.
+  - *Why*: Modal overlays can accidentally be dismissed by clicking outside, pressing Escape, or inspecting DOM elements, exposing interface controls. Hiding the application shell until `currentUser` is populated guarantees zero accidental exposure of event rosters or scanner controls.
 
-- **Decision 2: Independent Pagination State for Groups and Attendees**:
-  - *Chosen Approach*: Maintain separate reactive state variables: `groupPage`, `groupPageSize`, `attendeePage`, and `attendeePageSize`.
-  - *Why*: A user browsing through group summaries should not be disrupted when changing pages in the attendee roster below, and vice versa.
+- **Decision 2: Dropdown Menu vs. Multiple Header Buttons**:
+  - *Chosen Approach*: Single interactive profile button triggering a dropdown menu with both Switch Account and Sign Out actions.
+  - *Why*: Conserves critical horizontal space on mobile screens (where multiple buttons cause wrapping or clip the event selector), adhering to the top-bar spatial contract.
 
-- **Decision 3: Non-Intrusive Live Sync Updates**:
-  - *Chosen Approach*: When `/api/reports` live-syncs every 3 seconds, update the backing dataset `currentReports` and re-render without modifying `attendeePage` (unless the total page count shrank below the current page).
-  - *Why*: Prevents annoying UI jumps where an operator is reviewing Page 3 of the attendee roster and gets thrown back to Page 1 every 3 seconds.
+- **Decision 3: Complete Hardware & Stream Cleanup on Sign Out**:
+  - *Chosen Approach*: `stopCamera()` is invoked upon sign out, terminating media tracks and releasing camera hardware immediately.
+  - *Why*: Prevents mobile camera indicator lights from staying active when an operator signs out.
 
 ---
 
@@ -83,45 +79,44 @@ Streamline the QRPass attendance verifier interface by eliminating demo credenti
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                      Client State                           │
-│  - currentReports: { session, total, present, groups, ... } │
-│  - groupPage: 1                                             │
-│  - groupPageSize: 6  (4, 6, 12, 'all')                      │
-│  - attendeePage: 1                                          │
-│  - attendeePageSize: 15 (10, 15, 25, 50, 'all')             │
-│  - activeReportFilter: 'all' | 'missing' | 'present'        │
-│  - activeReportGroup: string                                │
-│  - activeReportSearch: string                               │
+│                       App Boot Lifecycle                    │
+│                                                             │
+│  1. Check localStorage for qrpass_auth_token                │
+│     ├── Token present ──> GET /api/auth/me                  │
+│     │                      ├── Valid: setUser() & showApp() │
+│     │                      └── Invalid: showAuthGate()      │
+│     └── No token ───────> showAuthGate()                    │
 └──────────────────────────────┬──────────────────────────────┘
                                │
                ┌───────────────┴───────────────┐
                ▼                               ▼
 ┌─────────────────────────────┐ ┌─────────────────────────────┐
-│    Group Cards Component    │ │    Attendee Table Component │
-│ - Slice groups[start:end]   │ │ - Filter by status & search │
-│ - Render progress cards     │ │ - Slice attendees[start:end]│
-│ - Render group pagination   │ │ - Render table rows         │
-│   controls & page size      │ │ - Render attendee pagination│
-│   selector                  │ │   controls & page size      │
+│      #auth-gate (Locked)    │ │   Application Workspace     │
+│ - Top header hidden         │ │ - Header & Nav tabs visible │
+│ - Main shell hidden         │ │ - Role-based tab filtering  │
+│ - Mandatory credentials     │ │ - User Profile Dropdown:    │
+│ - Error feedback banner     │ │    ├── Switch Account       │
+│ - On success: showApp()     │ │    └── Sign Out -> Gate     │
 └─────────────────────────────┘ └─────────────────────────────┘
 ```
 
 ### Component & DOM Changes
 
 1. **`public/index.html`**:
-   - In `#view-scanner`: Remove sample IDs `1234 (John Doe), 104829 (Maria Santos)` and clean the hint text.
-   - In `#view-reports`:
-     - Add `#group-pagination-bar` below `#group-cards-container`.
-     - Add `#attendee-pagination-bar` below `#report-table-body` wrapper.
-   - In `#modal-login`: Remove `.demo-login-box` containing the quick-sign-in buttons.
+   - Add `#auth-gate` section containing the full-screen branded login card before `<header>`.
+   - Update `#user-badge-container` in `<header>` to an interactive button with a dropdown container (`#user-profile-menu`) containing:
+     - User details header.
+     - `#menu-btn-switch-account` (Switch Account).
+     - `#menu-btn-sign-out` (Sign Out).
+   - Retain `#modal-login` specifically for the "Switch Account" dialog while inside the workspace.
 
 2. **`public/style.css`**:
-   - Add styles for `.pagination-bar`, `.pagination-info`, `.pagination-pages`, `.page-btn`, `.page-size-selector`, and `.page-btn.active`.
-   - Ensure touch-friendly sizes ($\ge 40\text{px}$ touch targets on mobile) and graceful responsive wrapping.
+   - Add styles for `.auth-gate`, `.auth-card`, and responsive centering.
+   - Add styles for `.profile-dropdown-wrapper`, `.profile-menu`, `.profile-menu-header`, and `.profile-menu-item`.
+   - Ensure mobile touch targets ($\ge 44\text{px}$) and clear hover/focus states.
 
 3. **`public/app.js`**:
-   - Initialize pagination state variables.
-   - Update `renderReports()` to slice groups according to `groupPage` and `groupPageSize`, and render group pagination buttons.
-   - Update `renderReportTable()` to filter attendees, slice according to `attendeePage` and `attendeePageSize`, and render attendee pagination buttons.
-   - Add event handlers for page size dropdowns/buttons and page navigation.
-   - Remove dead event listeners for demo accounts.
+   - Implement `showAuthGate()` and `showApp()`.
+   - Wire the `#form-gate-login` submit handler with error messaging and transition into `showApp()`.
+   - Wire profile dropdown toggle, outside click dismissal, and escape key listener.
+   - Wire `Sign Out`: calls `/api/auth/logout`, terminates camera stream, wipes token, and triggers `showAuthGate()`.

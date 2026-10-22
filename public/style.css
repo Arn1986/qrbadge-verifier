@@ -102,18 +102,131 @@ header {
   max-width: 170px;
 }
 
-/* User Account Badge */
+/* Profile Dropdown & User Badge */
+.profile-dropdown-wrapper {
+  position: relative;
+  display: inline-block;
+}
+
 .user-info-badge {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.15);
-  padding: 5px 10px;
+  padding: 6px 12px;
   border-radius: 8px;
   font-size: 12px;
   font-weight: 600;
   color: #e2ecf5;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease;
+  user-select: none;
+}
+
+.user-info-badge:hover,
+.user-info-badge[aria-expanded="true"] {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.35);
+}
+
+.dropdown-caret {
+  font-size: 11px;
+  margin-left: 2px;
+  opacity: 0.85;
+  transition: transform 0.2s ease;
+}
+
+.user-info-badge[aria-expanded="true"] .dropdown-caret {
+  transform: rotate(180deg);
+}
+
+.profile-menu {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  width: 220px;
+  background: #ffffff;
+  color: #16283c;
+  border-radius: 10px;
+  box-shadow: 0 12px 28px -4px rgba(0, 0, 0, 0.22), 0 6px 12px -4px rgba(0, 0, 0, 0.12);
+  border: 1px solid #d9e2ec;
+  padding: 6px;
+  z-index: 1000;
+  animation: profileMenuSlideIn 0.15s ease-out;
+}
+
+@keyframes profileMenuSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.profile-menu-header {
+  padding: 8px 10px 6px;
+}
+
+.profile-menu-name {
+  font-weight: 700;
+  font-size: 14px;
+  color: #102a43;
+  line-height: 1.2;
+}
+
+.profile-menu-role {
+  font-size: 11px;
+  color: #627d98;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+  margin-top: 3px;
+}
+
+.profile-menu-divider {
+  height: 1px;
+  background: #e2e8f0;
+  margin: 6px 0;
+}
+
+.profile-menu-item {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #334e68;
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s ease, color 0.12s ease;
+  min-height: unset;
+}
+
+.profile-menu-item:hover {
+  background: #f0f4f8;
+  color: #102a43;
+}
+
+.profile-menu-item svg {
+  flex-shrink: 0;
+}
+
+.profile-menu-item.danger {
+  color: #ba2525;
+}
+
+.profile-menu-item.danger:hover {
+  background: #ffe3e3;
+  color: #9e1c1c;
 }
 
 .user-role-tag {
@@ -125,6 +238,88 @@ header {
   border-radius: 4px;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+/* Mandatory Full-Screen Authentication Gateway */
+.auth-gate {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: linear-gradient(145deg, #0b1726 0%, #12243a 50%, #1a3654 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  overflow-y: auto;
+}
+
+.auth-gate-card {
+  width: 100%;
+  max-width: 420px;
+  background: #ffffff;
+  border-radius: 14px;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.45);
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  animation: authGateFadeIn 0.25s ease-out;
+}
+
+@keyframes authGateFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.auth-gate-brand {
+  background: #12243a;
+  color: #ffffff;
+  padding: 28px 24px 22px;
+  text-align: center;
+  border-bottom: 1px solid #233c58;
+}
+
+.auth-gate-brand .auth-logo {
+  display: block;
+  margin: 0 auto 10px;
+  filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.3));
+}
+
+.auth-gate-brand .auth-title {
+  margin: 0;
+  font-size: 24px;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: #ffffff;
+}
+
+.auth-gate-brand .auth-subtitle {
+  margin: 4px 0 0;
+  font-size: 13px;
+  color: #9fb3c8;
+}
+
+.auth-gate .auth-box {
+  padding: 24px 24px 28px;
+  background: #ffffff;
+}
+
+.auth-error-banner {
+  background: #fee2e2;
+  border: 1px solid #f87171;
+  color: #991b1b;
+  padding: 10px 12px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* PWA Install Button */

@@ -1,6 +1,6 @@
 {
-  "summary":  "Implementation plan for removing demo accounts and sample IDs from the login and scanner pages, streamlining the UI, and adding selectable dual-level pagination for groups and attendees on the reports page.",
-  "updatedAt":  "2026-10-22T07:44:46.882069908Z",
+  "summary":  "Implementation plan for full-screen mandatory login gateway, user profile dropdown with Sign Out and Switch Account, and session lifecycle management.",
+  "updatedAt":  "2026-10-22T08:08:43.642329326Z",
   "requestFeedback":  true,
   "userFacing":  true
 }
