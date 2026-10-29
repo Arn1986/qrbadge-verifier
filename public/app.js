@@ -5,6 +5,7 @@
   let currentReports = null;
   let currentRoster = [];
   let currentGroups = [];
+  let customFieldDefs = [];
   let recentCheckins = [];
   let activeReportFilter = 'all';
   let activeReportGroup = '';
@@ -73,6 +74,7 @@
   const modalPersonName = document.querySelector('#modal-person-name');
   const modalPersonId = document.querySelector('#modal-person-id');
   const modalPersonGroup = document.querySelector('#modal-person-group');
+  const modalCustomFields = document.querySelector('#modal-custom-fields');
   const modalStatusBadge = document.querySelector('#modal-status-badge');
   const modalVerifierName = document.querySelector('#modal-verifier-name');
   const modalTimeInfo = document.querySelector('#modal-time-info');
@@ -194,6 +196,7 @@
     if (appFooter) appFooter.hidden = false;
     setUser(user);
     loadSessions();
+    loadCustomFieldDefs();
     updateCameras();
     loadReports();
   }
@@ -741,6 +744,26 @@
 
     modalVerifierName.textContent = currentUser?.displayName || 'Supervisor';
 
+    // Render custom fields (e.g. Seat Number, Ticket Type, Role, etc.)
+    if (modalCustomFields) {
+      modalCustomFields.innerHTML = '';
+      const customEntries = Object.entries(p.customFields || {}).filter(([_, v]) => v !== undefined && v !== null && String(v).trim() !== '');
+      if (customEntries.length > 0) {
+        customEntries.forEach(([fieldName, fieldValue]) => {
+          const item = document.createElement('div');
+          item.className = 'custom-field-item';
+          item.innerHTML = `
+            <span class="custom-field-name">${escapeHtml(fieldName)}</span>
+            <span class="custom-field-value">${escapeHtml(String(fieldValue))}</span>
+          `;
+          modalCustomFields.appendChild(item);
+        });
+        modalCustomFields.hidden = false;
+      } else {
+        modalCustomFields.hidden = true;
+      }
+    }
+
     if (scanResult.alreadyPresent) {
       window.BadgeSounds?.play('already_present');
       modalStatusBadge.className = 'attendee-status-badge already';
@@ -763,6 +786,10 @@
 
   function closeConfirmModal() {
     modalConfirm.hidden = true;
+    if (modalCustomFields) {
+      modalCustomFields.hidden = true;
+      modalCustomFields.innerHTML = '';
+    }
     pendingAttendee = null;
     clearQROverlay();
     cameraStatus.textContent = 'Ready for next badge.';
@@ -1323,22 +1350,41 @@
     }
 
     if (currentRoster.length === 0) {
-      tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#6d8496;padding:24px;">No attendees found. Click "+ Add Person" or "Bulk Import (CSV)" to add attendees.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#6d8496;padding:24px;">No attendees found. Click "+ Add Person" or "Bulk Import (CSV)" to add attendees.</td></tr>';
       return;
     }
 
     tbody.innerHTML = '';
     currentRoster.forEach(p => {
+      let customFieldsHtml = '<span style="color:#8ca0b3;font-size:12px;">—</span>';
+      if (p.customFields && typeof p.customFields === 'object') {
+        const entries = Object.entries(p.customFields).filter(([_, v]) => v !== undefined && v !== null && String(v).trim() !== '');
+        if (entries.length > 0) {
+          customFieldsHtml = entries
+            .map(([k, v]) => `<span class="custom-field-tag" title="${escapeHtml(k)}: ${escapeHtml(String(v))}"><strong>${escapeHtml(k)}:</strong> ${escapeHtml(String(v))}</span>`)
+            .join(' ');
+        }
+      }
+
       const tr = document.createElement('tr');
       tr.innerHTML = `
         <td><strong>${escapeHtml(p.firstName)} ${escapeHtml(p.lastName)}</strong></td>
         <td><span class="tabular">${escapeHtml(p.identifierNumber)}</span></td>
         <td>${escapeHtml(p.groupName || 'General')}</td>
+        <td>${customFieldsHtml}</td>
         <td>
-          <button type="button" class="btn-sm btn-outline danger" style="padding:4px 8px;" title="Remove attendee">Delete</button>
+          <div class="table-actions">
+            <button type="button" class="btn-sm btn-outline btn-edit-person" title="Edit attendee & custom fields">Edit</button>
+            <button type="button" class="btn-sm btn-outline danger btn-delete-person" style="padding:4px 8px;" title="Remove attendee">Delete</button>
+          </div>
         </td>
       `;
-      tr.querySelector('button').addEventListener('click', async () => {
+
+      tr.querySelector('.btn-edit-person').addEventListener('click', () => {
+        openEditPersonModal(p);
+      });
+
+      tr.querySelector('.btn-delete-person').addEventListener('click', async () => {
         if (!confirm(`Delete ${p.firstName} ${p.lastName} (${p.identifierNumber}) from the roster?`)) return;
         try {
           await api('/api/persons/delete', {
@@ -1358,14 +1404,120 @@
   document.querySelector('#roster-search')?.addEventListener('input', debounce(loadRoster, 250));
   document.querySelector('#roster-group-filter')?.addEventListener('change', loadRoster);
 
+  // Reusable dynamic form generator for custom fields
+  function renderDynamicCustomFieldInputs(container, existingValues = {}) {
+    if (!container) return;
+    container.innerHTML = '';
+
+    const handledKeys = new Set();
+
+    // 1. Render all centrally defined schema fields
+    customFieldDefs.forEach(def => {
+      handledKeys.add(def.name);
+      const row = document.createElement('div');
+      row.className = 'custom-field-form-row';
+
+      const val = (existingValues && existingValues[def.name] !== undefined)
+        ? String(existingValues[def.name])
+        : '';
+
+      const isSelect = def.type === 'select';
+      let inputHtml = '';
+      if (isSelect) {
+        let opts = `<option value="">-- Select ${escapeHtml(def.name)} --</option>`;
+        (def.options || []).forEach(opt => {
+          const selected = (opt === val) ? 'selected' : '';
+          opts += `<option value="${escapeHtml(opt)}" ${selected}>${escapeHtml(opt)}</option>`;
+        });
+        inputHtml = `<select class="cf-val-input" data-field-name="${escapeHtml(def.name)}" ${def.isRequired ? 'required' : ''}>${opts}</select>`;
+      } else {
+        inputHtml = `<input type="text" class="cf-val-input" data-field-name="${escapeHtml(def.name)}" value="${escapeHtml(val)}" placeholder="Enter ${escapeHtml(def.name)}" ${def.isRequired ? 'required' : ''}>`;
+      }
+
+      row.innerHTML = `
+        <div style="grid-column: 1 / 3;">
+          <label>
+            ${escapeHtml(def.name)}
+            ${def.isRequired ? '<span style="color:#d93838;font-weight:700;">*</span>' : '<span style="color:#788f9f;font-weight:400;font-size:11px;">(Optional)</span>'}
+          </label>
+          ${inputHtml}
+        </div>
+      `;
+      container.append(row);
+    });
+
+    // 2. Render any existing attendee values that are one-off / ad-hoc (not part of the standard schema)
+    if (existingValues && typeof existingValues === 'object') {
+      Object.entries(existingValues).forEach(([k, v]) => {
+        if (!handledKeys.has(k) && v !== undefined && v !== null && String(v).trim()) {
+          appendAdHocFieldRow(container, k, String(v));
+        }
+      });
+    }
+  }
+
+  function appendAdHocFieldRow(container, fieldName = '', fieldValue = '') {
+    const row = document.createElement('div');
+    row.className = 'custom-field-form-row ad-hoc-row';
+    row.innerHTML = `
+      <div>
+        <label>Field Name</label>
+        <input type="text" class="cf-adhoc-name" value="${escapeHtml(fieldName)}" placeholder="e.g. Table, Dietary, Company">
+      </div>
+      <div>
+        <label>Field Value</label>
+        <input type="text" class="cf-adhoc-value" value="${escapeHtml(fieldValue)}" placeholder="e.g. VIP Table 4, Vegetarian">
+      </div>
+      <button type="button" class="btn-remove-row" title="Remove field">✕</button>
+    `;
+
+    row.querySelector('.btn-remove-row').addEventListener('click', () => {
+      row.remove();
+    });
+
+    container.append(row);
+  }
+
+  function collectCustomFieldsFromContainer(container) {
+    if (!container) return {};
+    const result = {};
+
+    // Standard schema fields
+    container.querySelectorAll('.cf-val-input').forEach(input => {
+      const fieldName = input.dataset.fieldName;
+      const val = input.value.trim();
+      if (fieldName && val) {
+        result[fieldName] = val;
+      }
+    });
+
+    // Ad-hoc fields
+    container.querySelectorAll('.ad-hoc-row').forEach(row => {
+      const nameInput = row.querySelector('.cf-adhoc-name');
+      const valInput = row.querySelector('.cf-adhoc-value');
+      const name = nameInput ? nameInput.value.trim() : '';
+      const val = valInput ? valInput.value.trim() : '';
+      if (name && val) {
+        result[name] = val;
+      }
+    });
+
+    return result;
+  }
+
   // Modal: Add Person
   const addPersonModal = document.querySelector('#modal-add-person');
-  document.querySelector('#btn-open-add-person')?.addEventListener('click', () => {
+  document.querySelector('#btn-open-add-person')?.addEventListener('click', async () => {
+    await loadCustomFieldDefs();
+    renderDynamicCustomFieldInputs(document.querySelector('#add-person-custom-fields-container'));
     addPersonModal.hidden = false;
     document.querySelector('#add-first-name').focus();
   });
   document.querySelector('#modal-add-close')?.addEventListener('click', () => addPersonModal.hidden = true);
   document.querySelector('#modal-add-cancel')?.addEventListener('click', () => addPersonModal.hidden = true);
+  document.querySelector('#btn-add-more-field-row')?.addEventListener('click', () => {
+    appendAdHocFieldRow(document.querySelector('#add-person-custom-fields-container'));
+  });
 
   document.querySelector('#form-add-person')?.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -1373,15 +1525,72 @@
     const lastName = document.querySelector('#add-last-name').value.trim();
     const identifierNumber = document.querySelector('#add-identifier').value.trim();
     const groupName = document.querySelector('#add-group').value.trim() || 'General';
+    const customFields = collectCustomFieldsFromContainer(document.querySelector('#add-person-custom-fields-container'));
+
+    const payload = { firstName, lastName, identifierNumber, groupName, customFields };
 
     try {
       await api('/api/persons', {
         method: 'POST',
-        body: JSON.stringify({ firstName, lastName, identifierNumber, groupName })
+        body: JSON.stringify(payload)
       });
       addPersonModal.hidden = true;
       document.querySelector('#form-add-person').reset();
       showToast(`Added ${firstName} ${lastName} (${identifierNumber})`, 'success');
+      loadRoster();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  });
+
+  // Modal: Edit Person
+  const editPersonModal = document.querySelector('#modal-edit-person');
+  async function openEditPersonModal(p) {
+    if (!editPersonModal) return;
+    await loadCustomFieldDefs();
+    document.querySelector('#edit-person-id').value = p.id;
+    document.querySelector('#edit-first-name').value = p.firstName;
+    document.querySelector('#edit-last-name').value = p.lastName;
+    document.querySelector('#edit-identifier').value = p.identifierNumber;
+    document.querySelector('#edit-group').value = p.groupName || 'General';
+
+    renderDynamicCustomFieldInputs(
+      document.querySelector('#edit-person-custom-fields-container'),
+      p.customFields || {}
+    );
+
+    editPersonModal.hidden = false;
+    document.querySelector('#edit-first-name').focus();
+  }
+
+  document.querySelector('#modal-edit-close')?.addEventListener('click', () => editPersonModal.hidden = true);
+  document.querySelector('#modal-edit-cancel')?.addEventListener('click', () => editPersonModal.hidden = true);
+  document.querySelector('#btn-edit-add-more-field-row')?.addEventListener('click', () => {
+    appendAdHocFieldRow(document.querySelector('#edit-person-custom-fields-container'));
+  });
+
+  document.querySelector('#form-edit-person')?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const id = Number(document.querySelector('#edit-person-id').value);
+    const firstName = document.querySelector('#edit-first-name').value.trim();
+    const lastName = document.querySelector('#edit-last-name').value.trim();
+    const identifierNumber = document.querySelector('#edit-identifier').value.trim();
+    const groupName = document.querySelector('#edit-group').value.trim() || 'General';
+    const customFields = collectCustomFieldsFromContainer(document.querySelector('#edit-person-custom-fields-container'));
+
+    try {
+      await api(`/api/persons/${id}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          firstName,
+          lastName,
+          identifierNumber,
+          groupName,
+          customFields
+        })
+      });
+      editPersonModal.hidden = true;
+      showToast(`Updated ${firstName} ${lastName}`, 'success');
       loadRoster();
     } catch (err) {
       showToast(err.message, 'error');
@@ -1401,14 +1610,43 @@
   document.querySelector('#modal-bulk-close')?.addEventListener('click', () => bulkModal.hidden = true);
   document.querySelector('#modal-bulk-cancel')?.addEventListener('click', () => bulkModal.hidden = true);
 
-  document.querySelector('#btn-insert-sample-csv')?.addEventListener('click', () => {
+  document.querySelector('#btn-insert-sample-csv')?.addEventListener('click', async () => {
+    if (customFieldDefs.length === 0) {
+      await loadCustomFieldDefs();
+    }
+    const standardHeaders = ['First Name', 'Last Name', 'Identifier', 'Group'];
+    const customHeaders = customFieldDefs.length > 0
+      ? customFieldDefs.map(d => d.name)
+      : ['Seat Number', 'Ticket Type'];
+    const allHeaders = [...standardHeaders, ...customHeaders];
+
+    const row1 = ['Claire', 'Beauchamp', '20491', 'Engineering'];
+    const row2 = ['Marcus', 'Vance', '30582', 'Sales'];
+    const row3 = ['Elena', 'Rostova', '40193', 'Marketing'];
+
+    customFieldDefs.forEach((def, i) => {
+      if (def.type === 'select' && Array.isArray(def.options) && def.options.length > 0) {
+        row1.push(def.options[0] || 'Option 1');
+        row2.push(def.options[1] || def.options[0] || 'Option 2');
+        row3.push(def.options[2] || def.options[0] || 'Option 3');
+      } else {
+        row1.push(i === 0 ? 'Row A-12' : 'Acme Corp');
+        row2.push(i === 0 ? 'Row B-04' : 'Globex Ltd');
+        row3.push(i === 0 ? 'Row C-19' : 'Initech');
+      }
+    });
+
+    if (customFieldDefs.length === 0) {
+      row1.push('Row A-12', 'VIP All-Access');
+      row2.push('Row B-04', 'General Pass');
+      row3.push('Row C-19', 'Speaker');
+    }
+
     bulkTextarea.value = [
-      'First Name, Last Name, Identifier, Group',
-      'Claire, Beauchamp, 20491, Engineering',
-      'Marcus, Vance, 30582, Sales',
-      'Elena, Rostova, 40193, Marketing',
-      'Kenji, Sato, 50284, Product',
-      'Zoe, Washington, 60375, Engineering'
+      allHeaders.join(', '),
+      row1.join(', '),
+      row2.join(', '),
+      row3.join(', ')
     ].join('\n');
     updateBulkPreview();
   });
@@ -1513,6 +1751,22 @@
     if (idIdx < 0) idIdx = 2;
     if (grpIdx < 0) grpIdx = 3;
 
+    // Identify extra columns to capture as custom fields
+    const recognizedCols = new Set([fnIdx, lnIdx, idIdx, grpIdx, nameIdx].filter(i => i >= 0));
+    const extraCols = [];
+    if (hasHeader) {
+      rows[0].forEach((origCol, idx) => {
+        if (!recognizedCols.has(idx) && origCol && origCol.trim()) {
+          extraCols.push({ idx, name: origCol.trim() });
+        }
+      });
+    } else {
+      const maxCols = Math.max(...dataRows.map(r => r.length), 0);
+      for (let i = 4; i < maxCols; i++) {
+        extraCols.push({ idx: i, name: i === 4 ? 'Additional Info' : `Field ${i + 1}` });
+      }
+    }
+
     const parsed = [];
     for (const row of dataRows) {
       let fn = '';
@@ -1557,12 +1811,21 @@
         }
       }
 
+      const customFields = {};
+      extraCols.forEach(col => {
+        const val = (row[col.idx] !== undefined) ? String(row[col.idx]).trim() : '';
+        if (val) {
+          customFields[col.name] = val;
+        }
+      });
+
       if (fn && id) {
         parsed.push({
           firstName: fn,
           lastName: ln || '—',
           identifierNumber: id,
-          groupName: grp || 'General'
+          groupName: grp || 'General',
+          customFields
         });
       }
     }
@@ -1573,10 +1836,21 @@
   function updateBulkPreview() {
     const list = parseCSV(bulkTextarea.value);
     if (list.length === 0) {
-      bulkPreviewSummary.textContent = 'No valid rows detected yet. Format: "First Name, Last Name, Identifier, Group" or "Full Name, Identifier".';
+      bulkPreviewSummary.textContent = 'No valid rows detected yet. Format: "First Name, Last Name, Identifier, Group, [Extra Fields...]" or "Full Name, Identifier".';
       bulkPreviewSummary.style.color = '#8496a5';
     } else {
-      bulkPreviewSummary.textContent = `✓ Detected ${list.length} valid attendee row${list.length === 1 ? '' : 's'} ready for import.`;
+      const customFieldNames = new Set();
+      list.forEach(p => {
+        if (p.customFields) {
+          Object.keys(p.customFields).forEach(k => customFieldNames.add(k));
+        }
+      });
+
+      let extraMsg = '';
+      if (customFieldNames.size > 0) {
+        extraMsg = ` with custom field${customFieldNames.size > 1 ? 's' : ''} (${Array.from(customFieldNames).join(', ')})`;
+      }
+      bulkPreviewSummary.textContent = `✓ Detected ${list.length} valid attendee row${list.length === 1 ? '' : 's'}${extraMsg} ready for import.`;
       bulkPreviewSummary.style.color = '#126e62';
     }
   }
@@ -1710,10 +1984,145 @@
   });
 
   // -------------------------------------------------------------
+  // PROGRAMMABLE CUSTOM FIELDS SCHEMA MANAGER
+  // -------------------------------------------------------------
+  async function loadCustomFieldDefs() {
+    try {
+      const data = await api('/api/custom-fields');
+      customFieldDefs = data.customFields || [];
+      renderCustomFieldsManager();
+    } catch (err) {
+      console.warn('Failed to load custom field definitions:', err);
+    }
+  }
+
+  function renderCustomFieldsManager() {
+    const tbody = document.querySelector('#settings-custom-fields-table');
+    if (!tbody) return;
+
+    if (customFieldDefs.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#6d8496;padding:20px;">No custom fields configured yet. Click "+ Add Custom Field" to define fields.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = '';
+    customFieldDefs.forEach(def => {
+      const tr = document.createElement('tr');
+      const isSelect = def.type === 'select';
+      const optionsHtml = isSelect && Array.isArray(def.options) && def.options.length > 0
+        ? def.options.map(opt => `<span class="cf-choice-chip">${escapeHtml(opt)}</span>`).join(' ')
+        : '<span style="color:#8ca0b3;font-size:12px;">Freeform text</span>';
+
+      tr.innerHTML = `
+        <td><strong>${escapeHtml(def.name)}</strong></td>
+        <td><span class="cf-type-badge ${isSelect ? 'select' : 'text'}">${isSelect ? 'Dropdown' : 'Text'}</span></td>
+        <td>${optionsHtml}</td>
+        <td><span class="badge-status ${def.isRequired ? 'present' : ''}">${def.isRequired ? 'Yes' : 'No'}</span></td>
+        <td>
+          <div class="table-actions">
+            <button type="button" class="btn-sm btn-outline btn-edit-cf" title="Edit field">Edit</button>
+            <button type="button" class="btn-sm btn-outline danger btn-delete-cf" title="Delete field">Delete</button>
+          </div>
+        </td>
+      `;
+
+      tr.querySelector('.btn-edit-cf').addEventListener('click', () => openCustomFieldDefModal(def));
+      tr.querySelector('.btn-delete-cf').addEventListener('click', async () => {
+        if (!confirm(`Delete custom field "${def.name}"? Existing attendee records will keep their values, but this field will no longer be configured in forms.`)) return;
+        try {
+          await api(`/api/custom-fields/${encodeURIComponent(def.id)}`, { method: 'DELETE' });
+          showToast(`Deleted custom field "${def.name}"`, 'info');
+          await loadCustomFieldDefs();
+        } catch (err) {
+          showToast(err.message, 'error');
+        }
+      });
+
+      tbody.append(tr);
+    });
+  }
+
+  const cfModal = document.querySelector('#modal-custom-field-def');
+  const cfForm = document.querySelector('#form-custom-field-def');
+  const cfTypeSelect = document.querySelector('#cf-type');
+  const cfOptionsGroup = document.querySelector('#cf-options-group');
+
+  function openCustomFieldDefModal(existingDef = null) {
+    if (!cfModal) return;
+    cfForm.reset();
+    if (existingDef) {
+      document.querySelector('#modal-cf-title').textContent = 'Edit Custom Field';
+      document.querySelector('#cf-id').value = existingDef.id;
+      document.querySelector('#cf-name').value = existingDef.name;
+      document.querySelector('#cf-type').value = existingDef.type || 'text';
+      document.querySelector('#cf-options').value = Array.isArray(existingDef.options) ? existingDef.options.join(', ') : '';
+      document.querySelector('#cf-required').checked = Boolean(existingDef.isRequired);
+    } else {
+      document.querySelector('#modal-cf-title').textContent = 'Add Custom Field';
+      document.querySelector('#cf-id').value = '';
+      document.querySelector('#cf-type').value = 'text';
+      document.querySelector('#cf-options').value = '';
+      document.querySelector('#cf-required').checked = false;
+    }
+    cfOptionsGroup.hidden = cfTypeSelect.value !== 'select';
+    cfModal.hidden = false;
+    document.querySelector('#cf-name').focus();
+  }
+
+  cfTypeSelect?.addEventListener('change', () => {
+    cfOptionsGroup.hidden = cfTypeSelect.value !== 'select';
+  });
+
+  document.querySelector('#btn-open-add-custom-field')?.addEventListener('click', () => openCustomFieldDefModal(null));
+  document.querySelector('#modal-cf-close')?.addEventListener('click', () => cfModal.hidden = true);
+  document.querySelector('#modal-cf-cancel')?.addEventListener('click', () => cfModal.hidden = true);
+
+  cfForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const id = document.querySelector('#cf-id').value.trim();
+    const name = document.querySelector('#cf-name').value.trim();
+    const type = document.querySelector('#cf-type').value;
+    const optionsRaw = document.querySelector('#cf-options').value;
+    const isRequired = document.querySelector('#cf-required').checked;
+
+    const options = type === 'select'
+      ? optionsRaw.split(',').map(s => s.trim()).filter(Boolean)
+      : [];
+
+    try {
+      await api('/api/custom-fields', {
+        method: 'POST',
+        body: JSON.stringify({
+          id: id || undefined,
+          name,
+          type,
+          options,
+          isRequired
+        })
+      });
+      cfModal.hidden = true;
+      showToast(`Saved custom field "${name}"`, 'success');
+      await loadCustomFieldDefs();
+    } catch (err) {
+      showToast(err.message, 'error');
+    }
+  });
+
+  // Download CSV template matching configured fields
+  document.querySelector('#btn-download-csv-template')?.addEventListener('click', () => {
+    const a = document.createElement('a');
+    a.href = '/api/persons/template-csv';
+    a.download = 'qrpass_attendees_template.csv';
+    a.click();
+    showToast('Downloaded sample CSV template matching active fields', 'success');
+  });
+
+  // -------------------------------------------------------------
   // SETTINGS VIEW (Admin Only)
   // -------------------------------------------------------------
   async function loadSettings() {
     try {
+      await loadCustomFieldDefs();
       const sessionsData = await api('/api/sessions');
       const tbody = document.querySelector('#settings-sessions-table');
       tbody.innerHTML = '';

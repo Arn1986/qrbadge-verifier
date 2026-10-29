@@ -65,12 +65,20 @@ const migration2 = fs.readFileSync(new URL('./migrations/0002_rate_limit.sql', i
 const migration3 = fs.readFileSync(new URL('./migrations/0003_attendance.sql', import.meta.url), 'utf8');
 const migration4 = fs.readFileSync(new URL('./migrations/0004_supervisors_and_pwa.sql', import.meta.url), 'utf8');
 const migration5 = fs.readFileSync(new URL('./migrations/0005_add_verified_by_columns.sql', import.meta.url), 'utf8');
+const migration6 = fs.readFileSync(new URL('./migrations/0006_add_custom_fields.sql', import.meta.url), 'utf8');
+const migration7 = fs.readFileSync(new URL('./migrations/0007_custom_field_definitions.sql', import.meta.url), 'utf8');
 sqlite.exec(migration1);
 sqlite.exec(migration2);
 sqlite.exec(migration3);
 sqlite.exec(migration4);
 try {
   sqlite.exec(migration5);
+} catch {}
+try {
+  sqlite.exec(migration6);
+} catch {}
+try {
+  sqlite.exec(migration7);
 } catch {}
 
 // Safely ensure verified_by columns exist on attendance_records
@@ -85,6 +93,52 @@ try {
   }
 } catch (e) {
   console.warn('Column check note:', e.message);
+}
+
+// Safely ensure custom_fields column exists on persons
+try {
+  const personTableInfo = sqlite.prepare('PRAGMA table_info(persons)').all();
+  const personCols = personTableInfo.map(c => c.name);
+  if (!personCols.includes('custom_fields')) {
+    sqlite.exec("ALTER TABLE persons ADD COLUMN custom_fields TEXT DEFAULT '{}';");
+  }
+} catch (e) {
+  console.warn('Person column check note:', e.message);
+}
+
+// Safely ensure custom_field_definitions table exists and has helpful seed definitions
+try {
+  sqlite.exec(`CREATE TABLE IF NOT EXISTS custom_field_definitions (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL DEFAULT 'text',
+    options TEXT DEFAULT '[]',
+    is_required INTEGER DEFAULT 0,
+    sort_order INTEGER DEFAULT 0,
+    created_at INTEGER DEFAULT (unixepoch())
+  )`);
+  const fieldCount = sqlite.prepare('SELECT count(*) as count FROM custom_field_definitions').get();
+  if (fieldCount && fieldCount.count === 0) {
+    sqlite.prepare('INSERT INTO custom_field_definitions (id, name, type, options, is_required, sort_order) VALUES (?, ?, ?, ?, ?, ?)').run(
+      'fld-ticket-type',
+      'Ticket Type',
+      'select',
+      JSON.stringify(['VIP All-Access', 'General Pass', 'Staff', 'Speaker']),
+      0,
+      1
+    );
+    sqlite.prepare('INSERT INTO custom_field_definitions (id, name, type, options, is_required, sort_order) VALUES (?, ?, ?, ?, ?, ?)').run(
+      'fld-seat-number',
+      'Seat Number',
+      'text',
+      '[]',
+      0,
+      2
+    );
+    console.log('Seeded default custom fields: Ticket Type, Seat Number');
+  }
+} catch (e) {
+  console.warn('Custom field definitions table note:', e.message);
 }
 
 // Seed default admin and supervisor accounts if table empty

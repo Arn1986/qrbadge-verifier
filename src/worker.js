@@ -28,7 +28,9 @@ async function authorized(request, env) {
 function unauthorized() { return new Response('Administrator sign-in required', { status: 401, headers: { ...noStore, 'www-authenticate': 'Basic realm="QR Badge Verifier Admin", charset="UTF-8"' } }); }
 function acceptedMutation(request) {
   const origin = request.headers.get('origin');
-  return request.headers.get('content-type')?.split(';')[0].trim().toLowerCase() === 'application/json' && (!origin || origin === new URL(request.url).origin);
+  const ct = request.headers.get('content-type')?.split(';')[0].trim().toLowerCase();
+  const isDeleteWithoutBody = request.method === 'DELETE' && (!ct || ct === 'application/json');
+  return (ct === 'application/json' || isDeleteWithoutBody) && (!origin || origin === new URL(request.url).origin);
 }
 async function readBody(request, maxBytes = 15 * 1024 * 1024) {
   const contentLength = Number(request.headers.get('content-length'));
@@ -135,15 +137,28 @@ async function scanAttendee(request, env) {
   }
 
   // Look up person in database
-  let personRow = await env.DB.prepare(
-    'SELECT id, first_name, last_name, identifier_number, group_name FROM persons WHERE identifier_number = ?'
-  ).bind(resolvedId).first();
-
-  // If not found and input was numeric, try matching trimmed number string
-  if (!personRow && /^\d+$/.test(resolvedId)) {
+  await ensureAttendanceSchema(env);
+  let personRow = null;
+  try {
     personRow = await env.DB.prepare(
-      'SELECT id, first_name, last_name, identifier_number, group_name FROM persons WHERE CAST(identifier_number AS INTEGER) = ?'
-    ).bind(Number(resolvedId)).first();
+      'SELECT id, first_name, last_name, identifier_number, group_name, custom_fields FROM persons WHERE identifier_number = ?'
+    ).bind(resolvedId).first();
+
+    if (!personRow && /^\d+$/.test(resolvedId)) {
+      personRow = await env.DB.prepare(
+        'SELECT id, first_name, last_name, identifier_number, group_name, custom_fields FROM persons WHERE CAST(identifier_number AS INTEGER) = ?'
+      ).bind(Number(resolvedId)).first();
+    }
+  } catch (_err) {
+    personRow = await env.DB.prepare(
+      'SELECT id, first_name, last_name, identifier_number, group_name FROM persons WHERE identifier_number = ?'
+    ).bind(resolvedId).first();
+
+    if (!personRow && /^\d+$/.test(resolvedId)) {
+      personRow = await env.DB.prepare(
+        'SELECT id, first_name, last_name, identifier_number, group_name FROM persons WHERE CAST(identifier_number AS INTEGER) = ?'
+      ).bind(Number(resolvedId)).first();
+    }
   }
 
   // Determine active session
@@ -163,6 +178,18 @@ async function scanAttendee(request, env) {
     if (attRow) {
       alreadyPresent = true;
       markedAt = attRow.scanned_at;
+    }
+  }
+
+  // Parse custom_fields JSON if present
+  let customFields = {};
+  if (personRow && personRow.custom_fields) {
+    try {
+      customFields = typeof personRow.custom_fields === 'string'
+        ? JSON.parse(personRow.custom_fields)
+        : (personRow.custom_fields || {});
+    } catch {
+      customFields = {};
     }
   }
 
@@ -190,7 +217,8 @@ async function scanAttendee(request, env) {
       firstName: personRow.first_name,
       lastName: personRow.last_name,
       identifierNumber: personRow.identifier_number,
-      groupName: personRow.group_name
+      groupName: personRow.group_name,
+      customFields
     } : null,
     alreadyPresent,
     markedAt,
@@ -368,6 +396,24 @@ async function ensureAttendanceSchema(env) {
       await env.DB.prepare('ALTER TABLE attendance_records ADD COLUMN verified_by_id INTEGER').run();
     }
   } catch {}
+  try {
+    const personInfo = await env.DB.prepare('PRAGMA table_info(persons)').all();
+    const personCols = (personInfo?.results || []).map(c => c.name);
+    if (!personCols.includes('custom_fields')) {
+      await env.DB.prepare("ALTER TABLE persons ADD COLUMN custom_fields TEXT DEFAULT '{}'").run();
+    }
+  } catch {}
+  try {
+    await env.DB.prepare(`CREATE TABLE IF NOT EXISTS custom_field_definitions (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      type TEXT NOT NULL DEFAULT 'text',
+      options TEXT DEFAULT '[]',
+      is_required INTEGER DEFAULT 0,
+      sort_order INTEGER DEFAULT 0,
+      created_at INTEGER DEFAULT (unixepoch())
+    )`).run();
+  } catch {}
 }
 
 async function markAttendance(request, env) {
@@ -471,7 +517,12 @@ async function getReports(request, env) {
     }
   }
 
-  const personsQuery = await env.DB.prepare('SELECT id, first_name, last_name, identifier_number, group_name FROM persons ORDER BY group_name ASC, last_name ASC, first_name ASC').all();
+  let personsQuery;
+  try {
+    personsQuery = await env.DB.prepare('SELECT id, first_name, last_name, identifier_number, group_name, custom_fields FROM persons ORDER BY group_name ASC, last_name ASC, first_name ASC').all();
+  } catch {
+    personsQuery = await env.DB.prepare('SELECT id, first_name, last_name, identifier_number, group_name FROM persons ORDER BY group_name ASC, last_name ASC, first_name ASC').all();
+  }
   const persons = personsQuery.results || [];
   const attendanceMap = new Map();
   for (const rec of attendanceRows) {
@@ -503,12 +554,21 @@ async function getReports(request, env) {
       g.missing++;
     }
     g.total++;
+
+    let customFields = {};
+    if (p.custom_fields) {
+      try {
+        customFields = typeof p.custom_fields === 'string' ? JSON.parse(p.custom_fields) : (p.custom_fields || {});
+      } catch {}
+    }
+
     g.members.push({
       id: p.id,
       firstName: p.first_name,
       lastName: p.last_name,
       identifierNumber: p.identifier_number,
       groupName: p.group_name,
+      customFields,
       isPresent,
       scannedAt: att ? att.scanned_at : null,
       source: att ? att.source : null,
@@ -541,7 +601,8 @@ async function listPersons(request, env) {
   const search = (url.searchParams.get('search') || '').trim().toLowerCase();
   const group = (url.searchParams.get('group') || '').trim();
 
-  let query = 'SELECT id, first_name, last_name, identifier_number, group_name, created_at FROM persons';
+  await ensureAttendanceSchema(env);
+  let query = 'SELECT id, first_name, last_name, identifier_number, group_name, custom_fields, created_at FROM persons';
   const conditions = [];
   const bindings = [];
 
@@ -560,20 +621,36 @@ async function listPersons(request, env) {
   }
   query += ' ORDER BY group_name ASC, last_name ASC, first_name ASC';
 
-  const [personsResult, groupsResult] = await Promise.all([
-    env.DB.prepare(query).bind(...bindings).all(),
-    env.DB.prepare('SELECT DISTINCT group_name FROM persons ORDER BY group_name ASC').all()
-  ]);
+  let personsResult;
+  try {
+    personsResult = await env.DB.prepare(query).bind(...bindings).all();
+  } catch {
+    let fallbackQuery = 'SELECT id, first_name, last_name, identifier_number, group_name, created_at FROM persons';
+    if (conditions.length > 0) fallbackQuery += ' WHERE ' + conditions.join(' AND ');
+    fallbackQuery += ' ORDER BY group_name ASC, last_name ASC, first_name ASC';
+    personsResult = await env.DB.prepare(fallbackQuery).bind(...bindings).all();
+  }
+
+  const groupsResult = await env.DB.prepare('SELECT DISTINCT group_name FROM persons ORDER BY group_name ASC').all();
 
   return json({
-    persons: (personsResult.results || []).map(p => ({
-      id: p.id,
-      firstName: p.first_name,
-      lastName: p.last_name,
-      identifierNumber: p.identifier_number,
-      groupName: p.group_name,
-      createdAt: p.created_at
-    })),
+    persons: (personsResult.results || []).map(p => {
+      let customFields = {};
+      if (p.custom_fields) {
+        try {
+          customFields = typeof p.custom_fields === 'string' ? JSON.parse(p.custom_fields) : (p.custom_fields || {});
+        } catch {}
+      }
+      return {
+        id: p.id,
+        firstName: p.first_name,
+        lastName: p.last_name,
+        identifierNumber: p.identifier_number,
+        groupName: p.group_name,
+        customFields,
+        createdAt: p.created_at
+      };
+    }),
     groups: (groupsResult.results || []).map(g => g.group_name)
   });
 }
@@ -614,15 +691,49 @@ async function createPerson(request, env) {
     }
   }
 
+  let customFields = {};
+  if (body?.customFields && typeof body.customFields === 'object') {
+    customFields = { ...body.customFields };
+  } else if (typeof body?.customFields === 'string') {
+    try { customFields = JSON.parse(body.customFields); } catch {}
+  } else if (body?.custom_fields && typeof body.custom_fields === 'object') {
+    customFields = { ...body.custom_fields };
+  } else if (typeof body?.custom_fields === 'string') {
+    try { customFields = JSON.parse(body.custom_fields); } catch {}
+  }
+  const singleFieldName = String(body?.customFieldName || body?.additionalFieldName || body?.fieldName || '').trim();
+  const singleFieldValue = String(body?.customFieldValue || body?.additionalFieldValue || body?.fieldValue || '').trim();
+  if (singleFieldName && singleFieldValue) {
+    customFields[singleFieldName] = singleFieldValue;
+  }
+  const customFieldsJson = JSON.stringify(customFields);
+
   const existing = await env.DB.prepare('SELECT id FROM persons WHERE identifier_number = ?').bind(identifierNumber).first();
   if (existing) return errorResponse(`Identifier number "${identifierNumber}" already exists`, 409);
 
+  await ensureAttendanceSchema(env);
   const createdAt = Math.floor(Date.now() / 1000);
-  await env.DB.prepare(
-    'INSERT INTO persons (first_name, last_name, identifier_number, group_name, created_at) VALUES (?, ?, ?, ?, ?)'
-  ).bind(firstName, lastName, identifierNumber, groupName, createdAt).run();
+  try {
+    await env.DB.prepare(
+      'INSERT INTO persons (first_name, last_name, identifier_number, group_name, custom_fields, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).bind(firstName, lastName, identifierNumber, groupName, customFieldsJson, createdAt).run();
+  } catch {
+    await env.DB.prepare(
+      'INSERT INTO persons (first_name, last_name, identifier_number, group_name, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).bind(firstName, lastName, identifierNumber, groupName, createdAt).run();
+  }
 
-  const inserted = await env.DB.prepare('SELECT id, first_name, last_name, identifier_number, group_name FROM persons WHERE identifier_number = ?').bind(identifierNumber).first();
+  let inserted = null;
+  try {
+    inserted = await env.DB.prepare('SELECT id, first_name, last_name, identifier_number, group_name, custom_fields FROM persons WHERE identifier_number = ?').bind(identifierNumber).first();
+  } catch {
+    inserted = await env.DB.prepare('SELECT id, first_name, last_name, identifier_number, group_name FROM persons WHERE identifier_number = ?').bind(identifierNumber).first();
+  }
+
+  let retCustomFields = customFields;
+  if (inserted?.custom_fields) {
+    try { retCustomFields = JSON.parse(inserted.custom_fields); } catch {}
+  }
 
   return json({
     success: true,
@@ -631,7 +742,8 @@ async function createPerson(request, env) {
       firstName: inserted.first_name,
       lastName: inserted.last_name,
       identifierNumber: inserted.identifier_number,
-      groupName: inserted.group_name
+      groupName: inserted.group_name,
+      customFields: retCustomFields
     }
   });
 }
@@ -649,6 +761,226 @@ async function deletePerson(request, env) {
   await env.DB.prepare('DELETE FROM attendance_records WHERE person_id = ?').bind(id).run();
   await env.DB.prepare('DELETE FROM persons WHERE id = ?').bind(id).run();
   return json({ success: true, deletedId: id });
+}
+
+async function updatePerson(request, env, routePersonId = null) {
+  const currentUser = await getUserFromRequest(request, env);
+  if (currentUser && currentUser.role !== 'admin') {
+    return errorResponse('Admin permission required to manage roster. Please sign in as admin.', 403);
+  }
+  let body;
+  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+
+  const id = Number(routePersonId || body?.id);
+  if (!id) return errorResponse('Person ID is required', 400);
+
+  const existing = await env.DB.prepare('SELECT id, identifier_number FROM persons WHERE id = ?').bind(id).first();
+  if (!existing) return errorResponse('Person not found', 404);
+
+  let firstName = (body?.firstName || body?.first_name || body?.name || '').trim();
+  let lastName = (body?.lastName || body?.last_name || '').trim();
+  const identifierNumber = String(body?.identifierNumber || body?.identifier_number || existing.identifier_number).trim();
+  const groupName = (body?.groupName || body?.group_name || body?.group || 'General').trim() || 'General';
+
+  if (!firstName && !lastName) {
+    return errorResponse('Name is required', 400);
+  }
+  if (!identifierNumber) {
+    return errorResponse('Identifier number is required', 400);
+  }
+
+  if (!lastName && firstName) {
+    const spaceIdx = firstName.indexOf(' ');
+    if (spaceIdx > 0) {
+      const full = firstName;
+      firstName = full.slice(0, spaceIdx).trim();
+      lastName = full.slice(spaceIdx + 1).trim();
+    } else {
+      lastName = '—';
+    }
+  }
+
+  // Check uniqueness of identifier if modified
+  if (identifierNumber !== String(existing.identifier_number)) {
+    const conflict = await env.DB.prepare('SELECT id FROM persons WHERE identifier_number = ? AND id != ?').bind(identifierNumber, id).first();
+    if (conflict) {
+      return errorResponse(`Identifier number "${identifierNumber}" is already in use by another person`, 409);
+    }
+  }
+
+  let customFields = {};
+  if (body?.customFields && typeof body.customFields === 'object') {
+    customFields = { ...body.customFields };
+  } else if (typeof body?.customFields === 'string') {
+    try { customFields = JSON.parse(body.customFields); } catch {}
+  } else if (body?.custom_fields && typeof body.custom_fields === 'object') {
+    customFields = { ...body.custom_fields };
+  } else if (typeof body?.custom_fields === 'string') {
+    try { customFields = JSON.parse(body.custom_fields); } catch {}
+  }
+  const customFieldsJson = JSON.stringify(customFields);
+
+  await ensureAttendanceSchema(env);
+  try {
+    await env.DB.prepare(
+      'UPDATE persons SET first_name = ?, last_name = ?, identifier_number = ?, group_name = ?, custom_fields = ? WHERE id = ?'
+    ).bind(firstName, lastName, identifierNumber, groupName, customFieldsJson, id).run();
+  } catch {
+    await env.DB.prepare(
+      'UPDATE persons SET first_name = ?, last_name = ?, identifier_number = ?, group_name = ? WHERE id = ?'
+    ).bind(firstName, lastName, identifierNumber, groupName, id).run();
+  }
+
+  const updated = await env.DB.prepare('SELECT id, first_name, last_name, identifier_number, group_name, custom_fields FROM persons WHERE id = ?').bind(id).first();
+
+  let retCustomFields = customFields;
+  if (updated?.custom_fields) {
+    try { retCustomFields = JSON.parse(updated.custom_fields); } catch {}
+  }
+
+  return json({
+    success: true,
+    person: {
+      id: updated.id,
+      firstName: updated.first_name,
+      lastName: updated.last_name,
+      identifierNumber: updated.identifier_number,
+      groupName: updated.group_name,
+      customFields: retCustomFields
+    }
+  });
+}
+
+async function listCustomFields(request, env) {
+  await ensureAttendanceSchema(env);
+  try {
+    const rows = await env.DB.prepare('SELECT id, name, type, options, is_required, sort_order, created_at FROM custom_field_definitions ORDER BY sort_order ASC, name ASC').all();
+    const fields = (rows?.results || []).map(r => {
+      let options = [];
+      try {
+        options = typeof r.options === 'string' ? JSON.parse(r.options) : (r.options || []);
+      } catch {
+        options = [];
+      }
+      return {
+        id: r.id,
+        name: r.name,
+        type: r.type || 'text',
+        options,
+        isRequired: Boolean(r.is_required),
+        sortOrder: Number(r.sort_order || 0),
+        createdAt: r.created_at
+      };
+    });
+    return json({ customFields: fields });
+  } catch (err) {
+    return json({ customFields: [] });
+  }
+}
+
+async function saveCustomField(request, env) {
+  const currentUser = await getUserFromRequest(request, env);
+  if (currentUser && currentUser.role !== 'admin') {
+    return errorResponse('Admin permission required to manage custom fields', 403);
+  }
+  let body;
+  try { body = await readBody(request); } catch { return errorResponse('Invalid request', 400); }
+
+  const name = String(body?.name || '').trim();
+  if (!name) return errorResponse('Field name is required', 400);
+
+  const type = ['select', 'dropdown'].includes(body?.type) ? 'select' : 'text';
+  let options = [];
+  if (Array.isArray(body?.options)) {
+    options = body.options.map(o => String(o).trim()).filter(Boolean);
+  } else if (typeof body?.options === 'string') {
+    options = body.options.split(',').map(o => o.trim()).filter(Boolean);
+  }
+  const isRequired = body?.isRequired ? 1 : 0;
+  const sortOrder = Number(body?.sortOrder || 0);
+
+  await ensureAttendanceSchema(env);
+
+  let id = String(body?.id || '').trim();
+  if (!id) {
+    id = 'fld_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6);
+  }
+
+  // Check uniqueness of field name across different IDs
+  const conflict = await env.DB.prepare('SELECT id FROM custom_field_definitions WHERE LOWER(name) = ? AND id != ?').bind(name.toLowerCase(), id).first();
+  if (conflict) {
+    return errorResponse(`A custom field named "${name}" already exists`, 409);
+  }
+
+  const optionsJson = JSON.stringify(options);
+
+  await env.DB.prepare(`
+    INSERT INTO custom_field_definitions (id, name, type, options, is_required, sort_order)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      name=excluded.name,
+      type=excluded.type,
+      options=excluded.options,
+      is_required=excluded.is_required,
+      sort_order=excluded.sort_order
+  `).bind(id, name, type, optionsJson, isRequired, sortOrder).run();
+
+  return json({
+    success: true,
+    customField: {
+      id,
+      name,
+      type,
+      options,
+      isRequired: Boolean(isRequired),
+      sortOrder
+    }
+  });
+}
+
+async function deleteCustomField(request, env, routeFieldId = null) {
+  const currentUser = await getUserFromRequest(request, env);
+  if (currentUser && currentUser.role !== 'admin') {
+    return errorResponse('Admin permission required to manage custom fields', 403);
+  }
+  let body = {};
+  try { body = await readBody(request); } catch {}
+  const id = String(routeFieldId || body?.id || '').trim();
+  if (!id) return errorResponse('Field ID is required', 400);
+
+  await ensureAttendanceSchema(env);
+  await env.DB.prepare('DELETE FROM custom_field_definitions WHERE id = ?').bind(id).run();
+  return json({ success: true, deletedId: id });
+}
+
+async function getTemplateCsv(request, env) {
+  await ensureAttendanceSchema(env);
+  let fields = [];
+  try {
+    const rows = await env.DB.prepare('SELECT name FROM custom_field_definitions ORDER BY sort_order ASC, name ASC').all();
+    fields = (rows?.results || []).map(r => r.name);
+  } catch {}
+
+  const standardCols = ['First Name', 'Last Name', 'Identifier', 'Group'];
+  const allHeaders = [...standardCols, ...fields];
+  const headerLine = allHeaders.map(h => `"${h.replace(/"/g, '""')}"`).join(',');
+
+  const sampleRow1 = ['Maria', 'Santos', '104829', 'Engineering', ...(fields.map((_, i) => i === 0 ? 'VIP All-Access' : 'Row A-12'))];
+  const sampleRow2 = ['Alex', 'Chen', '77881', 'Design', ...(fields.map((_, i) => i === 0 ? 'General Pass' : 'Row B-05'))];
+
+  const csvContent = [
+    headerLine,
+    sampleRow1.map(v => `"${v}"`).join(','),
+    sampleRow2.map(v => `"${v}"`).join(',')
+  ].join('\r\n');
+
+  return new Response(csvContent, {
+    status: 200,
+    headers: {
+      'content-type': 'text/csv; charset=utf-8',
+      'content-disposition': 'attachment; filename="qrpass_attendees_template.csv"'
+    }
+  });
 }
 
 async function bulkImportPersons(request, env, preParsedBody = null) {
@@ -696,29 +1028,65 @@ async function bulkImportPersons(request, env, preParsedBody = null) {
       lastName = '—';
     }
 
-    validItems.push({ firstName, lastName, identifierNumber, groupName });
+    let customFields = {};
+    if (item.customFields && typeof item.customFields === 'object') {
+      customFields = { ...item.customFields };
+    } else if (typeof item.customFields === 'string') {
+      try { customFields = JSON.parse(item.customFields); } catch {}
+    } else if (item.custom_fields && typeof item.custom_fields === 'object') {
+      customFields = { ...item.custom_fields };
+    } else if (typeof item.custom_fields === 'string') {
+      try { customFields = JSON.parse(item.custom_fields); } catch {}
+    }
+
+    const standardKeys = new Set(['firstName', 'first_name', 'name', 'attendee', 'lastName', 'last_name', 'surname', 'identifierNumber', 'identifier_number', 'id', 'code', 'number', 'badge', 'barcode', 'groupName', 'group_name', 'group', 'dept', 'department', 'team', 'customFields', 'custom_fields', 'createdAt', 'created_at']);
+    for (const [k, v] of Object.entries(item)) {
+      if (!standardKeys.has(k) && v !== undefined && v !== null && String(v).trim()) {
+        customFields[k] = String(v).trim();
+      }
+    }
+    const customFieldsJson = JSON.stringify(customFields);
+
+    validItems.push({ firstName, lastName, identifierNumber, groupName, customFieldsJson });
   }
 
   if (validItems.length === 0) {
     return errorResponse('No valid attendees found in submission. Ensure identifier and name are provided.', 400);
   }
 
-  const insertSql = 'INSERT INTO persons (first_name, last_name, identifier_number, group_name, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(identifier_number) DO UPDATE SET first_name=excluded.first_name, last_name=excluded.last_name, group_name=excluded.group_name';
+  await ensureAttendanceSchema(env);
+  let hasCustomCol = true;
+  try {
+    const info = await env.DB.prepare('PRAGMA table_info(persons)').all();
+    hasCustomCol = (info?.results || []).some(c => c.name === 'custom_fields');
+  } catch {
+    hasCustomCol = false;
+  }
 
+  const insertSqlWithCustom = 'INSERT INTO persons (first_name, last_name, identifier_number, group_name, custom_fields, created_at) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(identifier_number) DO UPDATE SET first_name=excluded.first_name, last_name=excluded.last_name, group_name=excluded.group_name, custom_fields=excluded.custom_fields';
+  const insertSqlFallback = 'INSERT INTO persons (first_name, last_name, identifier_number, group_name, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(identifier_number) DO UPDATE SET first_name=excluded.first_name, last_name=excluded.last_name, group_name=excluded.group_name';
+
+  const insertSql = hasCustomCol ? insertSqlWithCustom : insertSqlFallback;
   let importedCount = 0;
   if (typeof env.DB.batch === 'function') {
     const CHUNK_SIZE = 50; // Use 50 statements per D1 batch for optimal speed and reliability
     for (let i = 0; i < validItems.length; i += CHUNK_SIZE) {
       const chunk = validItems.slice(i, i + CHUNK_SIZE);
       const statements = chunk.map(item =>
-        env.DB.prepare(insertSql).bind(item.firstName, item.lastName, item.identifierNumber, item.groupName, createdAt)
+        hasCustomCol
+          ? env.DB.prepare(insertSql).bind(item.firstName, item.lastName, item.identifierNumber, item.groupName, item.customFieldsJson, createdAt)
+          : env.DB.prepare(insertSql).bind(item.firstName, item.lastName, item.identifierNumber, item.groupName, createdAt)
       );
       await env.DB.batch(statements);
       importedCount += chunk.length;
     }
   } else {
     for (const item of validItems) {
-      await env.DB.prepare(insertSql).bind(item.firstName, item.lastName, item.identifierNumber, item.groupName, createdAt).run();
+      if (hasCustomCol) {
+        await env.DB.prepare(insertSql).bind(item.firstName, item.lastName, item.identifierNumber, item.groupName, item.customFieldsJson, createdAt).run();
+      } else {
+        await env.DB.prepare(insertSql).bind(item.firstName, item.lastName, item.identifierNumber, item.groupName, createdAt).run();
+      }
       importedCount++;
     }
   }
@@ -792,11 +1160,23 @@ export default {
       if (path === '/api/reports' && request.method === 'GET') return await getReports(request, env);
       if (path === '/api/persons' && request.method === 'GET') return await listPersons(request, env);
       if (path === '/api/persons' && request.method === 'POST') return await createPerson(request, env);
+      if (path === '/api/persons/update' && ['POST', 'PUT'].includes(request.method)) return await updatePerson(request, env);
+      const personIdMatch = path.match(/^\/api\/persons\/(\d+)$/);
+      if (personIdMatch && ['PUT', 'POST'].includes(request.method)) return await updatePerson(request, env, personIdMatch[1]);
       if (path === '/api/persons/delete' && request.method === 'POST') return await deletePerson(request, env);
       if (path === '/api/persons/bulk' && request.method === 'POST') return await bulkImportPersons(request, env);
+      if (path === '/api/persons/template-csv' && request.method === 'GET') return await getTemplateCsv(request, env);
       if (path === '/api/sessions' && request.method === 'GET') return await listSessions(request, env);
       if (path === '/api/sessions' && request.method === 'POST') return await createSession(request, env);
       if (path === '/api/sessions/active' && request.method === 'POST') return await setActiveSession(request, env);
+
+      // Programmable Custom Fields Routes
+      if (path === '/api/custom-fields' && request.method === 'GET') return await listCustomFields(request, env);
+      if (path === '/api/custom-fields' && ['POST', 'PUT'].includes(request.method)) return await saveCustomField(request, env);
+      if (path === '/api/custom-fields/delete' && request.method === 'POST') return await deleteCustomField(request, env);
+      const customFieldIdMatch = path.match(/^\/api\/custom-fields\/([a-zA-Z0-9_\-]+)$/);
+      if (customFieldIdMatch && request.method === 'DELETE') return await deleteCustomField(request, env, customFieldIdMatch[1]);
+      if (customFieldIdMatch && request.method === 'PUT') return await saveCustomField(request, env);
 
       if (path === '/admin' || path === '/admin/' || path.startsWith('/api/admin/')) {
         if (!(await authorized(request, env))) return unauthorized();

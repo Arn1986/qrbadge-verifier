@@ -317,6 +317,7 @@
                 <th>Name</th>
                 <th>Identifier Number</th>
                 <th>Group</th>
+                <th>Additional Fields</th>
                 <th style="width:100px;">Actions</th>
               </tr>
             </thead>
@@ -360,6 +361,37 @@
 
     <!-- TAB 5: SETTINGS VIEW (Admin Only) -->
     <section id="view-settings" hidden>
+      <!-- Custom Fields & Schema Manager -->
+      <div class="card">
+        <div class="card-header">
+          <div>
+            <h2>Programmable Custom Fields &amp; Schema</h2>
+            <p class="small" style="margin:4px 0 0;">Define global custom attributes (e.g. Ticket Type, Seat Number, Company, Location, Equipment ID). Reusable across any event or use case.</p>
+          </div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button id="btn-download-csv-template" type="button" class="btn-secondary btn-sm" title="Download CSV template matching configured fields">📥 Download CSV Template</button>
+            <button id="btn-open-add-custom-field" type="button" class="btn-sm">+ Add Custom Field</button>
+          </div>
+        </div>
+
+        <div class="table-scroll" style="margin-top:14px;">
+          <table>
+            <thead>
+              <tr>
+                <th>Field Name</th>
+                <th>Type</th>
+                <th>Preset Options</th>
+                <th>Required</th>
+                <th style="width:130px;">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="settings-custom-fields-table">
+              <!-- Populated by JS -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
       <div class="card">
         <h2>Session &amp; Event Management</h2>
         <p class="small">Create new attendance sessions (e.g. "Orientation Day 2", "Workshop Afternoon") and switch active events.</p>
@@ -415,6 +447,9 @@
         <h2 id="modal-person-name" class="attendee-name">John Doe</h2>
         <div class="attendee-details">
           Identifier: <strong id="modal-person-id" class="tabular">1234</strong> · Group: <strong id="modal-person-group">Engineering</strong>
+        </div>
+        <div id="modal-custom-fields" class="modal-custom-fields" hidden>
+          <!-- Dynamically populated with custom fields during scan -->
         </div>
         <div id="modal-badge-container">
           <span id="modal-status-badge" class="attendee-status-badge new">Not yet checked in</span>
@@ -504,9 +539,101 @@
         <input id="add-group" type="text" required placeholder="e.g. Engineering, Sales, Operations" list="group-suggestions" style="width:100%;">
         <datalist id="group-suggestions"></datalist>
 
+        <!-- Dynamic Custom Fields Box -->
+        <div class="custom-field-box" style="margin-top:14px;padding:12px;background:#f3f8f6;border:1px dashed #9fd1c6;border-radius:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <label style="margin:0;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:0.04em;color:#126e62;">Custom Attributes</label>
+            <span class="small" style="color:#577185;">Visible when QR is scanned</span>
+          </div>
+          <div id="add-person-custom-fields-container" style="display:flex;flex-direction:column;gap:10px;">
+            <!-- Populated dynamically with configured fields & ad-hoc rows -->
+          </div>
+          <button id="btn-add-more-field-row" type="button" class="btn-sm btn-outline" style="margin-top:10px;font-size:12px;">+ Add One-off Field</button>
+        </div>
+
         <div class="modal-actions">
           <button id="modal-add-cancel" type="button" class="btn-secondary">Cancel</button>
           <button type="submit">Save Person</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: EDIT ATTENDEE & CUSTOM FIELDS -->
+  <div id="modal-edit-person" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="modal-edit-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modal-edit-title">Edit Attendee</h2>
+        <button id="modal-edit-close" class="modal-close" type="button" aria-label="Close dialog">×</button>
+      </div>
+      <form id="form-edit-person">
+        <input id="edit-person-id" type="hidden">
+
+        <label for="edit-first-name">First Name</label>
+        <input id="edit-first-name" type="text" required placeholder="e.g. John" style="width:100%;">
+
+        <label for="edit-last-name">Last Name</label>
+        <input id="edit-last-name" type="text" required placeholder="e.g. Doe" style="width:100%;">
+
+        <label for="edit-identifier">Identifier Number / Barcode</label>
+        <input id="edit-identifier" type="text" required placeholder="e.g. EMP-1048 or BADGE-01" style="width:100%;">
+
+        <label for="edit-group">Group Name</label>
+        <input id="edit-group" type="text" required placeholder="e.g. Engineering, Sales, Operations" list="group-suggestions" style="width:100%;">
+
+        <!-- Dynamic Custom Fields Box -->
+        <div class="custom-field-box" style="margin-top:14px;padding:12px;background:#f3f8f6;border:1px dashed #9fd1c6;border-radius:8px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+            <label style="margin:0;font-weight:700;font-size:12px;text-transform:uppercase;letter-spacing:0.04em;color:#126e62;">Custom Attributes</label>
+            <span class="small" style="color:#577185;">Visible when QR is scanned</span>
+          </div>
+          <div id="edit-person-custom-fields-container" style="display:flex;flex-direction:column;gap:10px;">
+            <!-- Populated dynamically with configured fields & attendee's values -->
+          </div>
+          <button id="btn-edit-add-more-field-row" type="button" class="btn-sm btn-outline" style="margin-top:10px;font-size:12px;">+ Add One-off Field</button>
+        </div>
+
+        <div class="modal-actions">
+          <button id="modal-edit-cancel" type="button" class="btn-secondary">Cancel</button>
+          <button type="submit">Update Attendee</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- MODAL: PROGRAMMABLE CUSTOM FIELD DEFINITION -->
+  <div id="modal-custom-field-def" class="modal-overlay" hidden role="dialog" aria-modal="true" aria-labelledby="modal-cf-title">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 id="modal-cf-title">Custom Field Definition</h2>
+        <button id="modal-cf-close" class="modal-close" type="button" aria-label="Close dialog">×</button>
+      </div>
+      <form id="form-custom-field-def">
+        <input id="cf-id" type="hidden">
+
+        <label for="cf-name">Field Name / Label</label>
+        <input id="cf-name" type="text" required placeholder="e.g. Ticket Type, Seat Number, Company, Location" style="width:100%;">
+
+        <label for="cf-type">Field Type</label>
+        <select id="cf-type" style="width:100%;margin-bottom:10px;">
+          <option value="text">Free Text Input</option>
+          <option value="select">Dropdown with Preset Choices</option>
+        </select>
+
+        <div id="cf-options-group" hidden>
+          <label for="cf-options">Preset Choices (comma-separated)</label>
+          <textarea id="cf-options" rows="3" placeholder="e.g. VIP All-Access, General Pass, Staff, Speaker" style="width:100%;"></textarea>
+          <p class="small" style="margin-top:2px;color:#617a8e;">Enter options separated by commas. These will be available in the dropdown when adding attendees.</p>
+        </div>
+
+        <label class="sound-choice" style="margin-top:10px;display:flex;align-items:center;gap:8px;">
+          <input id="cf-required" type="checkbox">
+          Mark as required field
+        </label>
+
+        <div class="modal-actions" style="margin-top:16px;">
+          <button id="modal-cf-cancel" type="button" class="btn-secondary">Cancel</button>
+          <button type="submit" id="btn-save-custom-field">Save Custom Field</button>
         </div>
       </form>
     </div>
@@ -522,7 +649,9 @@
       <p class="small" style="margin-top:0;">
         Upload a <code>.csv</code> file or paste rows below. Expected format:
         <br>
-        <code>firstName, lastName, identifierNumber, groupName</code>
+        <code>firstName, lastName, identifierNumber, groupName, [extra fields...]</code>
+        <br>
+        <span style="color:#126e62;font-weight:600;">✨ Custom Fields Supported:</span> Any extra columns with headers (e.g. <code>Seat Number</code>, <code>Ticket Type</code>, <code>Role</code>) will be saved and displayed prominently whenever the attendee's QR badge is scanned.
       </p>
 
       <div style="display:flex;gap:10px;margin-bottom:12px;align-items:center;flex-wrap:wrap;">

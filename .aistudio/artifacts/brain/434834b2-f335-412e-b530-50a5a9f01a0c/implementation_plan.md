@@ -1,102 +1,77 @@
-# QR Code Camera Overlay & Audio Feedback Restoration Plan
+# Implementation Plan: Programmable Custom Fields & Attendee Management
 
-Restore real-time audio scan feedback across modern mobile/desktop browsers and re-introduce a camera overlay canvas that draws a bounding outline with glowing corner brackets around detected QR badges.
-
-> [!IMPORTANT]
-> **Confirmed User Decisions**:
-> 1. **Camera QR Overlay**: Highlighting bounding outline with glowing corner brackets directly tracking the detected QR badge corners in real time.
-> 2. **Audio Feedback**: Distinct synthesized tones for success (rising dual chime), duplicate (double mid-tone alert), and error (low buzz).
+## Overview
+Transform the application into a versatile, reusable badge-and-verification system for any use case (events, conferences, inventory/asset tracking, training sessions, or school attendance) by adding a **dedicated Settings manager for programmable custom fields**. Administrators and supervisors can define global field names and input types (text or preset dropdown choices), which automatically propagate to manual forms, dynamic CSV import/export templates, directory views, and QR scan verification modals.
 
 ---
 
-## 1. Overview & Core Concept
+## 1. Key Features & Workflows
 
-When event supervisors point their mobile camera at an attendee badge, they require immediate tactile and visual confirmation that:
-1. The badge was recognized at its exact geometric location in the camera feed.
-2. The verification status (valid check-in, duplicate scan, or unregistered identifier) is instantly audible even in busy, noisy venue environments.
+### A. Dedicated "Custom Fields" Settings Management
+- **Central Management View**: Available in the top navigation or Settings panel for Supervisors and Admins.
+- **Programmable Field Properties**:
+  - **Field Label / Name** (e.g., `Ticket Category`, `Company`, `Seat Number`, `Asset Location`, `Dietary Preference`).
+  - **Input Style**: Free text or preset choices (comma-separated list converted to dropdown selections).
+  - **Status & Ordering**: Reorder fields, mark as required/optional, or remove unneeded fields.
+- **Instant Template Generator**: A "Download Sample CSV Template" button that dynamically creates a CSV file containing `name`, `identifier`, and all currently defined custom field names as column headers.
 
-This plan re-establishes the Web Audio engine with reliable browser interaction unlock handlers and mounts a dedicated viewport overlay canvas that tracks `jsQR` corner coordinates with glowing brackets.
+### B. Dynamic Add & Edit Person Modals
+- **Add Attendee Form**: Automatically renders input fields for all active programmable fields:
+  - Dropdown `<select>` for fields configured with preset options.
+  - Text `<input>` for freeform fields.
+  - Optional "+ Add Ad-hoc Field" button for one-off attendee attributes.
+- **Edit Attendee in Directory**:
+  - An "Edit" button on each attendee row in the Attendee Directory.
+  - Opens the Edit Modal pre-filled with the attendee's Name, Badge Identifier, and current custom field values.
+  - Immediate database update via `PUT /api/persons/:id`.
 
-```
-┌────────────────────────────────────────────────────────┐
-│ Scanner Viewport (.scanner)                            │
-│                                                        │
-│   ┌──────────────────────────────────────────────┐     │
-│   │ <video id="video"> (camera stream)           │     │
-│   └──────────────────────────────────────────────┘     │
-│                         ▲                              │
-│   ┌─────────────────────┴────────────────────────┐     │
-│   │ <canvas id="qr-overlay"> (overlay layer)     │     │
-│   │   ┌──┐                                ┌──┐   │     │
-│   │   │  └────────────────────────────────┘  │   │     │
-│   │   │   [QR BADGE BOUNDING POLYGON]        │   │     │
-│   │   │  ┌────────────────────────────────┐  │   │     │
-│   │   └──┘                                └──┘   │     │
-│   │   Glowing Corner Brackets (#10b981)          │     │
-│   └──────────────────────────────────────────────┘     │
-└────────────────────────────────────────────────────────┘
-```
+### C. QR Scan Verification Modal
+- Scanned badge verification dynamically displays all configured field names and their assigned values.
+- Clean layout with highlighted badges/tags for preset categories (e.g., VIP, Speaker, Staff) and clear label-value pairings.
 
----
-
-## 2. Technical Architecture & Component Flow
-
-```
-Camera Frame Captured (requestAnimationFrame)
-                │
-                ▼
-        jsQR Decoding Run
-                │
-         ┌──────┴──────┐
-         │             │
-    QR Detected   No QR in Frame
-         │             │
-         │             ▼
-         │      Draw Viewfinder Reticle (Corner Guides)
-         ▼
-Scale Coordinates (Video Native -> Display Aspect Ratio)
-         │
-         ├──► 1. Draw Glowing Polygon on #qr-overlay
-         ├──► 2. Draw 4 Corner Brackets (Thickened Vertices)
-         ├──► 3. Trigger Audio Chime (BadgeSounds.play)
-         └──► 4. Open Confirmation Modal / Send Verification API
-```
+### D. Smart CSV Import & Export
+- Bulk CSV import automatically detects column headers matching defined custom fields.
+- Directory CSV export includes all active custom fields as dedicated columns.
 
 ---
 
-## 3. Implementation Steps
+## 2. Technical Architecture & Data Model
 
-### Phase A: Audio Feedback Engine Hardening (`public/sounds.js` & `public/app.js`)
-- **Autoplay & AudioContext Policy Fix**:
-  - Modern iOS Safari and Chrome strictly suspend `AudioContext` until initiated via a user gesture.
-  - Bind global interaction unlock listeners (`pointerdown`, `click`, `touchstart`) to wake and resume `AudioContext`.
-  - In `BadgeSounds.play(result)`: If `context` is suspended or uninitialized, automatically call `context.resume()` prior to scheduling tone oscillators instead of silently discarding audio.
-- **Synthesized Distinct Tones**:
-  - **Success / Valid (`valid`)**: 740 Hz $\rightarrow$ 990 Hz rising dual-tone chime with clean exponential decay.
-  - **Duplicate (`already_present`)**: Double 587 Hz pulse with distinct spacing.
-  - **Error / Unregistered (`not_found`, `denied`)**: 360 Hz $\rightarrow$ 260 Hz descending triangle wave buzz.
-- **Audio Toggle Respect**: Respect the `#sound-enabled` checkbox state in real time.
+### Database Migration (`migrations/0007_custom_field_definitions.sql`)
+- Create table `custom_field_definitions`:
+  - `id TEXT PRIMARY KEY` (UUID or slug)
+  - `name TEXT NOT NULL UNIQUE`
+  - `type TEXT NOT NULL DEFAULT 'text'` (`text` or `select`)
+  - `options TEXT DEFAULT '[]'` (JSON array of string choices)
+  - `is_required INTEGER DEFAULT 0`
+  - `sort_order INTEGER DEFAULT 0`
+  - `created_at DATETIME DEFAULT CURRENT_TIMESTAMP`
 
-### Phase B: Real-Time Camera QR Overlay (`public/index.html`, `public/style.css`, `public/app.js`)
-- **Overlay Canvas Element**:
-  - Add `<canvas id="qr-overlay" class="qr-overlay"></canvas>` directly inside `.scanner` positioned over `<video>`.
-  - Style with `pointer-events: none; position: absolute; inset: 0; width: 100%; height: 100%;`.
-- **Coordinate Transformation**:
-  - Calculate video scale and letterbox offsets: compare `video.videoWidth` / `video.videoHeight` with `canvas.clientWidth` / `canvas.clientHeight` (handling `object-fit: contain`).
-  - Map `qrCode.location` corners (`topLeftCorner`, `topRightCorner`, `bottomRightCorner`, `bottomLeftCorner`) to display canvas pixel space.
-- **Visual Styling (Bounding Outline & Glowing Corner Brackets)**:
-  - Connect corners with a smooth translucent glowing stroke (`rgba(16, 185, 129, 0.65)`, 2.5px width).
-  - Draw accentuated L-shaped corner brackets at all 4 corners using `#10b981` (emerald green) with `shadowBlur: 10`, `shadowColor: '#10b981'`.
-  - Idle state: Render stylish viewfinder corner targeting marks in `#7dd3c6` (brand teal) to guide operators on where to aim badges.
-- **Overlay Reset**:
-  - Clear the overlay when camera stops, when the modal confirms, or when the scan completes.
+### Backend Endpoints (`src/worker.js` & `server.js`)
+- `GET /api/custom-fields` — Retrieve all active field definitions.
+- `POST /api/custom-fields` — Create a new field definition (Supervisor/Admin session required).
+- `PUT /api/custom-fields/:id` — Update field name, type, or options.
+- `DELETE /api/custom-fields/:id` — Remove a field definition.
+- `PUT /api/persons/:id` — Update attendee name, identifier, and custom field values.
+- `GET /api/persons/template-csv` — Generate on-the-fly CSV sample with active field headers.
+
+### Frontend (`public/index.html`, `public/app.js`, `public/style.css`)
+- **Settings View / Tab**: Section for managing custom fields with an interactive "+ New Field" modal and field list table.
+- **Dynamic Form Builder**: Form renderer in `modal-add-person` and `modal-edit-person` that dynamically constructs controls based on the loaded field definitions.
+- **Directory Table**: Columns automatically display custom field data; "Edit" button opens attendee editor.
+- **Scan Confirmation Modal**: Dynamic rendering of all stored fields for the scanned badge.
 
 ---
 
-## 4. Verification & Testing Checklist
-- [ ] Verify AudioContext resumes and plays audio on mobile and desktop upon scanning.
-- [ ] Verify distinct tones for: new check-in (success), already present (duplicate), and unregistered barcode (error).
-- [ ] Verify overlay canvas aligns with the QR badge corners across aspect ratios.
-- [ ] Verify viewfinder guides appear when camera is active and clear when camera is stopped.
-- [ ] Ensure `compile_applet` and `lint_applet` pass.
-- [ ] Ensure `bun.lock` is not created.
+## 3. Automated Testing & Verification
+- **Automated Tests (`test/attendance.test.js`)**:
+  - Test custom field CRUD endpoints (`GET`, `POST`, `PUT`, `DELETE /api/custom-fields`).
+  - Test attendee creation and update (`PUT /api/persons/:id`) with custom field values.
+  - Test CSV bulk import with custom field headers.
+  - Test scan verification (`/api/scan`) returning custom fields in the verification payload.
+- **End-to-End Verification**:
+  - Define custom fields in Settings: e.g., "Ticket Tier" (choices: `VIP, General, Speaker`) and "Company" (text).
+  - Add attendee using the dynamically generated form and select "VIP".
+  - Edit attendee to update their company and ticket tier.
+  - Scan the attendee's QR badge and confirm both "Ticket Tier: VIP" and "Company" appear with correct styling.
+  - Download sample CSV, verify headers match configured fields, and test import.
